@@ -21,20 +21,54 @@ gate the decision to ever put real funds on this wallet.
 
 ## Mainnet readiness gaps
 
-Three tiers, by risk if skipped.
+Split into **code work** (engineering hours) and **configuration setup** (you
+just edit files / env vars). The only real engineering blocker is hardware
+wallet integration; the other two Tier-1-feeling items are operator setup.
 
-### Tier 1 — must-have before any real-money use
+### Code work — engineering blocker
 
 | Gap | Why it matters | Sketch |
 |---|---|---|
 | **Hardware wallet integration (Ledger / Trezor)** | Hot mnemonic in agent-vault is fine for testnet and small daily-spend hot accounts. Anything beyond a few hundred dollars belongs on a device that never exposes the seed. | Refactor `core/signer.py` to swap in `eth_account.LedgerSignerMiddleware` (or `ledgereth`). Wallet builds the unsigned tx; signing happens on-device with user button press. Keystore-backed accounts and Ledger accounts coexist in `state.json`. |
-| **MEV-protected broadcast RPC** | Public mempool = sandwich attacks. Critical for swap; matters even for transfers (front-running, censorship). | `policy.json` adds `require_private_rpc: true` (default for mainnet). Default broadcast URL = Flashbots Protect (`https://rpc.flashbots.net`). Public RPC can still be used for reads (balance / history). Refuse broadcast against public RPC unless explicit `--allow-public-rpc`. |
-| **Mainnet policy.json populated** | The wallet ships fail-closed (deny-all when policy missing) — but the operator must populate `recipient_allowlist` / `contract_allowlist` / `max_per_tx` with mainnet addresses. A typo here is a permanent funds loss. | Provide `wallet policy init --chain ethereum` template with sane mainnet defaults (caps in USD-equivalent), and `wallet policy verify` that round-trip-fetches each allowlisted address from Etherscan to confirm it's the contract you think it is. |
 
-### Tier 2 — strongly recommended before scaling activity
+### Configuration setup — no code change needed
+
+The wallet already supports both of these out of the box; the operator just
+has to set them up before flipping to mainnet.
+
+| Setup | What to do | Notes |
+|---|---|---|
+| **Use a MEV-protected RPC for broadcasts** | `export WALLET_ETH_RPC=https://rpc.flashbots.net` (or MEV Blocker). Wallet broadcasts via this URL. | Optional code addition (Tier 2 below): `policy.json` field `require_private_rpc: true` to *enforce* this — refuses broadcast against public RPC. Without that field, you trust yourself to set the env var correctly. |
+| **Populate `policy.json` for mainnet** | Edit `~/.wallet/policy.json` with mainnet allowlist addresses + caps. The wallet ships fail-closed; agents are denied until you allow specific recipients/contracts. | A typo here is permanent funds loss. Worth a code addition (Tier 2 below): `wallet policy verify` that round-trips each allowlisted address from Etherscan to confirm it's the contract you intended. |
+
+Suggested mainnet `policy.json` starter (edit before use):
+
+```jsonc
+{
+  "max_per_tx":  { "ETH": "0.01", "USDC": "100", "USDT": "100" },
+  "max_per_day": { "ETH": "0.05", "USDC": "500" },
+  "recipient_allowlist": [
+    // add your CEX deposit addresses, your other wallets, etc.
+    // "0xYourBinanceDepositAddress",
+    // "0xYourCoinbaseDepositAddress"
+  ],
+  "contract_allowlist": [
+    // "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",  // Uniswap V3 SwapRouter02
+    // "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",  // Aave V3 Pool (mainnet)
+    // "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"   // Lido stETH
+  ],
+  "deny_unlimited_approve": true,
+  "first_send_warn": true,
+  "sentinel_blocklist": []
+}
+```
+
+### Tier 2 — strongly recommended before scaling activity (all code work)
 
 | Gap | Why it matters | Sketch |
 |---|---|---|
+| **`require_private_rpc` policy enforcement** | Trust-but-verify: even if operator sets the right RPC URL today, a future config drift could route broadcasts back to public mempool without anyone noticing. | Add `require_private_rpc: bool` to `Policy`. `policy.evaluate` rejects broadcast when caller's RPC URL hostname matches a configurable public-RPC blocklist (publicnode, Infura HTTPS, etc.). |
+| **`wallet policy verify` command** | A typo in `recipient_allowlist` or `contract_allowlist` is a permanent funds loss. Manual review of a JSON file is unreliable. | New CLI subcommand: for each allowlist entry, fetch contract metadata from Etherscan (verified contract name, deployer, source-code hash) and display a confirmation table. TTY-only. Optionally caches the contract verification timestamp inside policy.json. |
 | **Stuck-tx recovery** | Mainnet base-fee spikes leave broadcast txs pending for hours. No way to cancel or speed up currently. | `wallet tx replace <nonce> --speedup-pct 25` (re-signs with same nonce, higher gas). `wallet tx cancel <nonce>` (sends 0-value to self at higher gas). Both go through the same policy / idempotency / audit pipeline. |
 | **Multi-RPC fallback + cross-check** | Single RPC = SPOF. A malicious / compromised RPC can spoof balances or censor broadcasts. | `chains.json` accepts `rpc_urls: [...]` array. Critical reads (balance, nonce, fee history) consensus across N=2 endpoints; mismatch logged + warned. Broadcast tries primary, falls back to next on `rpc_error`. |
 | **agent-vault binary integrity** | `shutil.which("agent-vault")` follows PATH. Any `agent-vault` shim earlier in PATH could exfiltrate every secret on first call. | Pin absolute path in `~/.wallet/config.json` plus sha256 verification on every wallet startup. Fail loudly on mismatch. |
