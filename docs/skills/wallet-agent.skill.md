@@ -5,7 +5,28 @@ description: |
   EVM-compatible chains. Read operations (balance, history, account list) are
   always safe; signing operations require explicit user authorization in the
   current turn AND must conform to the local policy at ~/.wallet/policy.json.
+  Always invoke with `WALLET_JSON=1` (or `--json`) so output is machine-
+  parseable.
 ---
+
+# Output mode
+
+Always set `WALLET_JSON=1` once at the start of your shell session (or pass
+`--json` on every call). Every command emits a single-line JSON envelope:
+
+- success: `{"ok":true,"command":"<name>","chain":"<chain>","data":{...}}`
+- error:   `{"ok":false,"command":"<name>","chain":"<chain>","error":"<code>","code":"<code>","reason":"<details>"}`
+
+Parse with `jq` or `json.loads`. **Do NOT regex-parse human-readable rich
+output** — it is not a stable API.
+
+Error `code` values are enumerable: `validation_error`, `policy_block`,
+`idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
+`simulation_reverted`, `aborted`, `missing_request_id`, `confirmation_required`,
+`tty_required`. Branch on these, not on `reason` text.
+
+For debugging only, add `--explain` or `WALLET_EXPLAIN=1`. Decision details
+go to **stderr** so stdout JSON stays clean.
 
 # Wallet usage rules for agents
 
@@ -16,18 +37,24 @@ the policy gate doesn't reject your operations.
 
 ## Always-safe (no signing, no money movement)
 
-These can be invoked at will:
+Set this once per session:
 
+```sh
+export WALLET_JSON=1
 ```
-wallet balance [--account <name>] [--token <sym>] [--all]
-wallet account list
-wallet account show <name>
-wallet history -n <N>
-wallet token list
-wallet book list
-wallet watch list
-wallet policy show           # see what limits apply
-wallet info
+
+Then invoke read commands and parse with jq:
+
+```sh
+wallet balance --token USDC | jq -r '.data.balances[0].amount'
+wallet account list          | jq -r '.data.accounts[].name'
+wallet account show <name>   | jq -r '.data.signed'        # true / false
+wallet history -n 20         | jq '.data.transactions[] | {dir:.direction, hash}'
+wallet token list            | jq -c '.data.tokens'
+wallet book list             | jq '.data.entries'
+wallet watch list            | jq '.data.entries'
+wallet policy show           | jq '.data.policy'
+wallet info                  | jq .
 ```
 
 ## Sending ETH or ERC-20 (signing — needs user OK + policy compliance)
@@ -35,22 +62,36 @@ wallet info
 Workflow EVERY time:
 
 1. **Confirm intent with the user in plain language** before touching anything.
-2. **Dry-run first** — no `--broadcast`. Show the preview to the user.
+2. **Dry-run first** — no `--broadcast`. Parse the preview JSON and show key
+   fields to the user (`from`, `to`, `amount`, `unit`, `estimated_fee`):
+   ```sh
+   wallet send <to> <amount> | jq '{from:.data.from,to:.data.to,amount:(.data.amount+" "+.data.unit),fee:.data.estimated_fee}'
+   ```
 3. **Wait for user's explicit "yes / go ahead / broadcast"** in the same turn.
 4. **Generate a fresh request-id** (idempotency key — required for all
-   broadcasts you initiate):
+   broadcasts you initiate; never reuse):
+   ```sh
+   RID=$(python -c "import uuid; print(uuid.uuid4())")
    ```
-   python -c "import uuid; print(uuid.uuid4())"
+5. **Broadcast with `--broadcast --yes --request-id`** (in JSON mode `--yes`
+   is required because there's no interactive confirmation):
+   ```sh
+   wallet send <to> <amount> --broadcast --yes --request-id "$RID" \
+     | jq -r '.data.tx_hash'
+   wallet approve set <token> <spender> <amount> --broadcast --yes --request-id "$RID"
+   wallet approve revoke <token> <spender> --broadcast --yes --request-id "$RID"
    ```
-5. **Broadcast with both `--broadcast` and `--request-id`**:
+6. **If the call fails with `error: rpc_error`** (transient network), RETRY
+   using the SAME request-id. The wallet's idempotency store returns the
+   cached result and never double-broadcasts:
+   ```jsonc
+   // First call returns broadcast:
+   {"ok":true,"data":{"phase":"broadcast","tx_hash":"0x...","outcome":"broadcast"}}
+   // Retry with same request-id:
+   {"ok":true,"data":{"phase":"idempotent_replay","tx_hash":"0x...","outcome":"replayed_idempotent"}}
    ```
-   wallet send <to> <amount> --broadcast --request-id <uuid>
-   wallet approve set <token> <spender> <amount> --broadcast --request-id <uuid>
-   wallet approve revoke <token> <spender> --broadcast --request-id <uuid>
-   ```
-6. **If the call fails with a transient network error**, RETRY using the SAME
-   request-id (not a new one). The wallet will replay the result, not double-spend.
-7. **If the call succeeds**, report the tx hash + explorer URL to the user.
+7. **If `.ok == false`**, show the user `.error` and `.reason` verbatim. Use
+   the error code → action table below to suggest the right next step.
 
 ## Forbidden
 

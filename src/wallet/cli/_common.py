@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import typer
-from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 from web3 import Web3
 
+from wallet.cli._output import (
+    OutputMode,
+    emit,
+    emit_error,
+    explain,
+    info,
+    stdout_console,
+)
 from wallet.core.config import ChainConfig
 from wallet.core.rpc import format_units
 from wallet.core.signer import sign_transaction
 from wallet.core.tx import PreparedTx, broadcast
 from wallet.storage.state import WalletState
-
-console = Console()
 
 
 def resolve_address(state: WalletState, query: str) -> str:
@@ -51,60 +56,108 @@ def _label_for(state: WalletState, address: str) -> str:
     return ""
 
 
-def preview_tx(
-    state: WalletState,
-    chain: ChainConfig,
-    prepared: PreparedTx,
-) -> None:
-    desc = prepared.description
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="bold cyan")
-    table.add_column()
-
-    table.add_row("action", desc["kind"])
-    table.add_row("chain", f"{chain.name} (chainId={chain.chain_id})")
-
-    from_label = _label_for(state, desc["from"])
-    table.add_row("from", f"{desc['from']}{' [' + from_label + ']' if from_label else ''}")
-
-    if "to" in desc:
-        to_label = _label_for(state, desc["to"])
-        table.add_row("to", f"{desc['to']}{' [' + to_label + ']' if to_label else ''}")
-    if "spender" in desc:
-        sp_label = _label_for(state, desc["spender"])
-        table.add_row("spender", f"{desc['spender']}{' [' + sp_label + ']' if sp_label else ''}")
-    if "token_address" in desc:
-        table.add_row("token", desc["token_address"])
-
-    amount_str = format_units(desc["amount_wei"], desc["amount_decimals"])
-    table.add_row("amount", f"{amount_str} {desc['amount_unit']}")
-
-    tx = prepared.tx
-    table.add_row("nonce", str(tx["nonce"]))
-    table.add_row("gas limit", str(tx["gas"]))
-    table.add_row(
-        "max fee / gas",
-        f"{format_units(tx['maxFeePerGas'], 9)} gwei",
-    )
-    table.add_row(
-        "priority fee",
-        f"{format_units(tx['maxPriorityFeePerGas'], 9)} gwei",
-    )
-    table.add_row(
-        "est. fee",
-        f"{format_units(prepared.estimated_fee_wei, 18)} {chain.native_symbol}",
-    )
-
-    console.print(Panel(table, title="transaction preview", border_style="cyan"))
-
-
 def _category(prepared: PreparedTx) -> str:
+    """Classify into the high-level command name used in audit + JSON envelope."""
     kind = prepared.description.get("kind", "")
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
         return "send"
     return "unknown"
+
+
+def _kind_machine(prepared: PreparedTx) -> str:
+    """Stable machine-readable kind: native_transfer / erc20_transfer / erc20_approve."""
+    desc = prepared.description
+    kind_raw = desc.get("kind", "")
+    if kind_raw == "native transfer":
+        return "native_transfer"
+    if "approve" in kind_raw:
+        return "erc20_approve"
+    if "transfer" in kind_raw:
+        return "erc20_transfer"
+    return "unknown"
+
+
+def _build_data(
+    prepared: PreparedTx,
+    chain: ChainConfig,
+    *,
+    phase: str,
+    state: WalletState | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """Pull a structured payload out of a PreparedTx for emit / audit / JSON."""
+    desc = prepared.description
+    tx = prepared.tx
+
+    payload: dict = {
+        "phase": phase,
+        "kind": _kind_machine(prepared),
+        "from": desc.get("from"),
+        "amount_wei": str(desc.get("amount_wei", 0)),
+        "amount": format_units(int(desc.get("amount_wei", 0)), int(desc.get("amount_decimals", 18))),
+        "unit": desc.get("amount_unit"),
+        "decimals": desc.get("amount_decimals"),
+        "nonce": tx.get("nonce"),
+        "gas": tx.get("gas"),
+        "max_fee_per_gas_wei": str(tx.get("maxFeePerGas")),
+        "max_priority_fee_per_gas_wei": str(tx.get("maxPriorityFeePerGas")),
+        "estimated_fee_wei": str(prepared.estimated_fee_wei),
+        "estimated_fee": format_units(prepared.estimated_fee_wei, 18),
+    }
+    if "to" in desc:
+        payload["to"] = desc["to"]
+    if "spender" in desc:
+        payload["spender"] = desc["spender"]
+    if "token_address" in desc:
+        payload["token_address"] = desc["token_address"]
+    if state is not None:
+        if "to" in desc:
+            label = _label_for(state, desc["to"])
+            if label:
+                payload["to_label"] = label
+        if "spender" in desc:
+            label = _label_for(state, desc["spender"])
+            if label:
+                payload["spender_label"] = label
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _render_preview(state: WalletState, chain: ChainConfig):
+    """Return a rich render closure that draws the existing preview panel."""
+    def render(envelope: dict) -> None:
+        d = envelope["data"]
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column(style="bold cyan")
+        table.add_column()
+
+        table.add_row("action", d.get("kind", "?"))
+        table.add_row("chain", f"{chain.name} (chainId={chain.chain_id})")
+
+        from_label = d.get("from_label", "") or _label_for(state, d.get("from", ""))
+        table.add_row("from", f"{d['from']}{' [' + from_label + ']' if from_label else ''}")
+
+        if "to" in d:
+            to_label = d.get("to_label", "")
+            table.add_row("to", f"{d['to']}{' [' + to_label + ']' if to_label else ''}")
+        if "spender" in d:
+            sp_label = d.get("spender_label", "")
+            table.add_row("spender", f"{d['spender']}{' [' + sp_label + ']' if sp_label else ''}")
+        if "token_address" in d:
+            table.add_row("token", d["token_address"])
+
+        table.add_row("amount", f"{d['amount']} {d['unit']}")
+        table.add_row("nonce", str(d.get("nonce")))
+        table.add_row("gas limit", str(d.get("gas")))
+        table.add_row("max fee / gas", f"{format_units(int(d['max_fee_per_gas_wei']), 9)} gwei")
+        table.add_row("priority fee", f"{format_units(int(d['max_priority_fee_per_gas_wei']), 9)} gwei")
+        table.add_row("est. fee", f"{d['estimated_fee']} {chain.native_symbol}")
+
+        stdout_console().print(Panel(table, title="transaction preview", border_style="cyan"))
+    return render
 
 
 def _audit_event(
@@ -117,8 +170,6 @@ def _audit_event(
     outcome: str,
     request_id: str | None,
 ) -> None:
-    """Write one append-only audit log entry. Never raises (audit must not
-    block the actual operation)."""
     from wallet.storage import audit
 
     desc = prepared.description
@@ -146,7 +197,6 @@ def _audit_event(
             "outcome": outcome,
         })
     except Exception:
-        # never block the user's operation because of an audit failure
         pass
 
 
@@ -167,99 +217,140 @@ def confirm_and_broadcast(
     from wallet.core.policy import Decision
     from wallet.storage import idempotency
 
-    preview_tx(state, chain, prepared)
+    cmd = _category(prepared)
 
+    # --- preview (always shown in rich; emitted as phase=preview in JSON dry-run) ---
     if dry_run:
-        console.print("[dim]dry-run — not signing or broadcasting[/dim]")
+        envelope = {
+            "ok": True,
+            "command": cmd,
+            "chain": chain.name,
+            "data": _build_data(prepared, chain, phase="preview", state=state),
+        }
+        emit(envelope, _render_preview(state, chain))
+        info("[dim]dry-run — not signing or broadcasting[/dim]")
         return
 
+    # In rich mode we still want to show the preview before policy/confirm.
+    # In JSON mode we hold the preview data and only emit on terminal events.
+    if not OutputMode.json:
+        _render_preview(state, chain)({"data": _build_data(prepared, chain, phase="preview", state=state)})
+
     caller = caller_kind()
+    explain(f"caller={caller} request_id={request_id} policy_bypass={policy_bypass}")
 
     # --- policy gate ---
     decision = policy_mod.evaluate(prepared, state, caller, bypass=policy_bypass)
+    explain(f"policy.evaluate → allowed={decision.allowed} severity={decision.severity} reason={decision.reason}")
 
     if not decision.allowed:
-        _audit_event(
-            prepared, chain, decision, caller,
-            tx_hash=None, outcome="rejected", request_id=request_id,
+        _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+        emit_error(
+            "policy_block",
+            command=cmd,
+            chain=chain.name,
+            reason=decision.reason,
+            data=_build_data(prepared, chain, phase="rejected", state=state),
         )
-        console.print(f"[red]policy block:[/red] {decision.reason}")
         if "no-policy-configured" in decision.reason:
-            console.print(
-                "[dim]run `wallet policy init` in your terminal, then edit "
-                "~/.wallet/policy.json to add allowlist entries.[/dim]"
-            )
+            info("[dim]run `wallet policy init` in your terminal, then edit ~/.wallet/policy.json[/dim]")
         raise typer.Exit(code=3)
 
     if decision.severity == "warn":
         if caller == "agent":
-            _audit_event(
-                prepared, chain, decision, caller,
-                tx_hash=None, outcome="rejected", request_id=request_id,
+            _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+            emit_error(
+                "policy_block",
+                command=cmd, chain=chain.name,
+                reason=f"warn-in-agent-mode:{decision.reason}",
             )
-            console.print(f"[red]policy block (warn in agent mode):[/red] {decision.reason}")
             raise typer.Exit(code=3)
-        console.print(f"[yellow]warn:[/yellow] {decision.reason}")
-        if not yes and not Confirm.ask("proceed despite warning?", default=False):
-            _audit_event(
-                prepared, chain, decision, caller,
-                tx_hash=None, outcome="user_aborted_after_warn", request_id=request_id,
-            )
-            console.print("[yellow]aborted[/yellow]")
-            raise typer.Exit(code=1)
+        info(f"[yellow]warn:[/yellow] {decision.reason}")
+        if not yes:
+            if OutputMode.json:
+                # Cannot prompt in JSON mode; require explicit --yes
+                _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+                emit_error(
+                    "confirmation_required",
+                    command=cmd, chain=chain.name,
+                    reason="JSON mode requires --yes to proceed past a warning",
+                )
+                raise typer.Exit(code=4)
+            if not Confirm.ask("proceed despite warning?", default=False):
+                _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="user_aborted_after_warn", request_id=request_id)
+                emit_error("aborted", command=cmd, chain=chain.name, reason="user declined after warning")
+                raise typer.Exit(code=1)
 
     # --- idempotency check ---
     fp = idempotency.fingerprint(prepared, chain)
+    explain(f"idempotency.fingerprint={fp[:12]}…")
     if request_id is not None:
         try:
             cached = idempotency.lookup(request_id, fp)
         except idempotency.IdempotencyMismatch as e:
-            block = Decision(allowed=False, reason=f"idempotency-mismatch", severity="block")
-            _audit_event(
-                prepared, chain, block, caller,
-                tx_hash=None, outcome="rejected", request_id=request_id,
-            )
-            console.print(f"[red]{e}[/red]")
+            block = Decision(allowed=False, reason="idempotency-mismatch", severity="block")
+            _audit_event(prepared, chain, block, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+            emit_error("idempotency_mismatch", command=cmd, chain=chain.name, reason=str(e), request_id=request_id)
             raise typer.Exit(code=3) from None
         if cached is not None:
-            _audit_event(
-                prepared, chain, decision, caller,
-                tx_hash=cached.tx_hash, outcome="replayed_idempotent", request_id=request_id,
-            )
-            console.print(f"[dim]idempotent replay (request_id={request_id}, original from {cached.created_at})[/dim]")
-            if cached.tx_hash:
-                console.print(cached.tx_hash, soft_wrap=True, highlight=False)
-                console.print(
-                    chain.explorer_tx_url.replace("{tx}", cached.tx_hash),
-                    soft_wrap=True, style="dim", highlight=False,
-                )
+            _audit_event(prepared, chain, decision, caller, tx_hash=cached.tx_hash, outcome="replayed_idempotent", request_id=request_id)
+            replay_data = _build_data(prepared, chain, phase="idempotent_replay", state=state, extra={
+                "tx_hash": cached.tx_hash,
+                "explorer_url": chain.explorer_tx_url.replace("{tx}", cached.tx_hash) if cached.tx_hash else None,
+                "request_id": request_id,
+                "outcome": "replayed_idempotent",
+                "original_created_at": cached.created_at,
+            })
+            envelope = {"ok": True, "command": cmd, "chain": chain.name, "data": replay_data}
+
+            def render_replay(_e):
+                info(f"[dim]idempotent replay (request_id={request_id}, original from {cached.created_at})[/dim]")
+                if cached.tx_hash:
+                    stdout_console().print(cached.tx_hash, soft_wrap=True, highlight=False)
+                    stdout_console().print(
+                        chain.explorer_tx_url.replace("{tx}", cached.tx_hash),
+                        soft_wrap=True, style="dim", highlight=False,
+                    )
+
+            emit(envelope, render_replay)
             return
     elif caller == "agent":
-        # Agents must always provide --request-id for broadcast; without it,
-        # a transient retry would double-spend.
         block = Decision(allowed=False, reason="missing-request-id-for-agent", severity="block")
-        _audit_event(
-            prepared, chain, block, caller,
-            tx_hash=None, outcome="rejected", request_id=None,
-        )
-        console.print(
-            "[red]policy block:[/red] agent broadcast requires --request-id\n"
-            "[dim]generate one via `python -c 'import uuid; print(uuid.uuid4())'`[/dim]"
+        _audit_event(prepared, chain, block, caller, tx_hash=None, outcome="rejected", request_id=None)
+        emit_error(
+            "missing_request_id",
+            command=cmd, chain=chain.name,
+            reason="agent broadcast requires --request-id (generate via uuidgen)",
         )
         raise typer.Exit(code=3)
 
-    # --- final user confirm prompt ---
-    if not yes and not Confirm.ask("send this transaction?", default=False):
-        _audit_event(
-            prepared, chain, decision, caller,
-            tx_hash=None, outcome="user_aborted", request_id=request_id,
-        )
-        console.print("[yellow]aborted[/yellow]")
-        raise typer.Exit(code=1)
+    # --- final user confirm ---
+    if not yes:
+        if OutputMode.json:
+            _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+            emit_error(
+                "confirmation_required",
+                command=cmd, chain=chain.name,
+                reason="JSON mode requires --yes when broadcasting",
+            )
+            raise typer.Exit(code=4)
+        if not Confirm.ask("send this transaction?", default=False):
+            _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="user_aborted", request_id=request_id)
+            emit_error("aborted", command=cmd, chain=chain.name, reason="user declined")
+            raise typer.Exit(code=1)
 
     # --- sign + broadcast ---
-    raw = sign_transaction(sender_account, prepared.tx)
-    tx_hash = broadcast(w3, raw)
+    try:
+        raw = sign_transaction(sender_account, prepared.tx)
+        tx_hash = broadcast(w3, raw)
+    except Exception as e:
+        _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+        emit_error(
+            "rpc_error",
+            command=cmd, chain=chain.name,
+            reason=f"{type(e).__name__}: {e}",
+        )
+        raise typer.Exit(code=1) from None
     if not tx_hash.startswith("0x"):
         tx_hash = "0x" + tx_hash
 
@@ -272,14 +363,24 @@ def confirm_and_broadcast(
                 outcome="broadcast",
             )
         except Exception:
-            pass  # never let idempotency persist failure block the broadcast result
+            pass
 
-    _audit_event(
-        prepared, chain, decision, caller,
-        tx_hash=tx_hash, outcome="broadcast", request_id=request_id,
-    )
+    _audit_event(prepared, chain, decision, caller, tx_hash=tx_hash, outcome="broadcast", request_id=request_id)
 
-    explorer_url = chain.explorer_tx_url.replace("{tx}", tx_hash)
-    console.print("[green]submitted:[/green]")
-    console.print(tx_hash, soft_wrap=True, highlight=False)
-    console.print(explorer_url, soft_wrap=True, style="dim", highlight=False)
+    success_data = _build_data(prepared, chain, phase="broadcast", state=state, extra={
+        "tx_hash": tx_hash,
+        "explorer_url": chain.explorer_tx_url.replace("{tx}", tx_hash),
+        "request_id": request_id,
+        "outcome": "broadcast",
+    })
+    envelope = {"ok": True, "command": cmd, "chain": chain.name, "data": success_data}
+
+    def render_success(_e):
+        info("[green]submitted:[/green]")
+        stdout_console().print(tx_hash, soft_wrap=True, highlight=False)
+        stdout_console().print(
+            chain.explorer_tx_url.replace("{tx}", tx_hash),
+            soft_wrap=True, style="dim", highlight=False,
+        )
+
+    emit(envelope, render_success)

@@ -138,6 +138,51 @@ uv run wallet send <to> 0.0001 --broadcast
 # briefly (the fallback path).
 ```
 
+## JSON output mode (for agents)
+
+Every command supports a global `--json` flag (or `WALLET_JSON=1` env var)
+that emits a single-line JSON envelope on stdout instead of rich tables:
+
+```sh
+WALLET_JSON=1 wallet balance --token USDC | jq .
+# {"ok":true,"command":"balance","chain":"sepolia","data":{...}}
+```
+
+**Standard envelope**:
+
+```jsonc
+// success
+{"ok":true,"command":"<name>","chain":"<chain>","data":{...command-specific...}}
+
+// error
+{"ok":false,"command":"<name>","chain":"<chain>","error":"<code>","code":"<code>","reason":"<details>"}
+```
+
+**Error codes** (machine-enumerable): `validation_error`, `policy_block`,
+`idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
+`simulation_reverted`, `aborted`, `missing_request_id`,
+`confirmation_required`, `tty_required`.
+
+**Amount fields** (always strings to avoid JS bigint loss): `amount_wei`,
+`amount` (human-readable), `unit`, `decimals`. Addresses are EIP-55
+checksummed.
+
+Two companion flags:
+
+- `--quiet` / `WALLET_QUIET=1` — rich mode only: suppresses status lines
+  ("dry-run", "submitted:", etc.) but keeps tables and errors. No-op under
+  `--json`.
+- `--explain` / `WALLET_EXPLAIN=1` — emits decision-trace details (policy
+  evaluation, idempotency lookup) to **stderr** in both modes. Stdout JSON
+  stays clean for `jq`.
+
+**stdout/stderr discipline** (so `wallet --json X | jq` always works):
+
+| stream | rich mode | json mode |
+|---|---|---|
+| stdout | tables + status lines (unless `--quiet`) | one JSON envelope per command |
+| stderr | warnings, `--explain` | warnings, `--explain` |
+
 ## Agent-callable usage
 
 The wallet defends against agent abuse with a four-layer stack:

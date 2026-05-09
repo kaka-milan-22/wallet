@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import typer
-from rich.console import Console
 
 from wallet import __version__
 from wallet.cli import account as account_cli
@@ -10,6 +9,7 @@ from wallet.cli import book as book_cli
 from wallet.cli import policy as policy_cli
 from wallet.cli import token as token_cli
 from wallet.cli import watch as watch_cli
+from wallet.cli._output import OutputMode, emit, stdout_console
 from wallet.cli.balance import balance as balance_cmd
 from wallet.cli.history import history as history_cmd
 from wallet.cli.send import send as send_cmd
@@ -29,13 +29,37 @@ app.command("balance")(balance_cmd)
 app.command("send")(send_cmd)
 app.command("history")(history_cmd)
 
-console = Console()
+
+@app.callback()
+def _global(
+    json_output: bool = typer.Option(
+        False, "--json", envvar="WALLET_JSON",
+        help="Emit machine-readable JSON envelopes on stdout (instead of rich tables).",
+    ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", envvar="WALLET_QUIET",
+        help="Suppress non-essential status lines (rich mode only; no-op under --json).",
+    ),
+    explain: bool = typer.Option(
+        False, "--explain", envvar="WALLET_EXPLAIN",
+        help="Print policy / idempotency decision details to stderr.",
+    ),
+) -> None:
+    """Top-level options applied to every subcommand."""
+    OutputMode.json = json_output
+    OutputMode.quiet = quiet
+    OutputMode.explain = explain
 
 
 @app.command()
 def version() -> None:
     """Print wallet CLI version."""
-    console.print(f"wallet [bold cyan]{__version__}[/bold cyan]")
+    emit(
+        {"ok": True, "command": "version", "data": {"version": __version__}},
+        render_rich=lambda d: stdout_console().print(
+            f"wallet [bold cyan]{d['data']['version']}[/bold cyan]"
+        ),
+    )
 
 
 @app.command()
@@ -44,12 +68,29 @@ def info() -> None:
     from wallet.core.config import get_chain
     from wallet.storage.state import state_path
 
-    state = state_path()
     chain = get_chain("sepolia")
-    console.print(f"state file:   [dim]{state}[/dim]")
-    console.print(f"default chain:[dim] {chain.name} (chainId={chain.chain_id})[/dim]")
-    console.print(f"rpc:          [dim]{chain.rpc_url}[/dim]")
-    console.print(f"explorer:     [dim]{chain.explorer_tx_url}[/dim]")
+    data = {
+        "ok": True,
+        "command": "info",
+        "chain": chain.name,
+        "data": {
+            "state_file": str(state_path()),
+            "default_chain": chain.name,
+            "chain_id": chain.chain_id,
+            "rpc_url": chain.rpc_url,
+            "explorer_tx_url": chain.explorer_tx_url,
+        },
+    }
+
+    def render(d: dict) -> None:
+        c = stdout_console()
+        x = d["data"]
+        c.print(f"state file:   [dim]{x['state_file']}[/dim]")
+        c.print(f"default chain:[dim] {x['default_chain']} (chainId={x['chain_id']})[/dim]")
+        c.print(f"rpc:          [dim]{x['rpc_url']}[/dim]")
+        c.print(f"explorer:     [dim]{x['explorer_tx_url']}[/dim]")
+
+    emit(data, render)
 
 
 if __name__ == "__main__":

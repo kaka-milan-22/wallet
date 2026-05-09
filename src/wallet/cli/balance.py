@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
+from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, make_web3
 from wallet.core.tokens import balance_of, resolve_token
 from wallet.storage.state import load_state
 
-console = Console()
-
 
 def _resolve_targets(state, account: str | None, all_watched: bool) -> list[tuple[str, str]]:
-    """Return list of (label, address) to query."""
     if all_watched:
         rows: list[tuple[str, str]] = [(a.name, a.address) for a in state.accounts]
         rows += [(w.label or w.address[:10], w.address) for w in state.watch]
@@ -23,7 +20,6 @@ def _resolve_targets(state, account: str | None, all_watched: bool) -> list[tupl
         a = state.find_account(account)
         if a:
             return [(a.name, a.address)]
-        # treat as watch label or address
         for w in state.watch:
             if w.label == account or w.address.lower() == account.lower():
                 return [(w.label or w.address, w.address)]
@@ -31,9 +27,7 @@ def _resolve_targets(state, account: str | None, all_watched: bool) -> list[tupl
 
     a = state.get_default_account()
     if not a:
-        raise typer.BadParameter(
-            "no accounts registered — run `wallet account create <name>`"
-        )
+        raise typer.BadParameter("no accounts registered — run `wallet account create <name>`")
     return [(a.name, a.address)]
 
 
@@ -48,31 +42,63 @@ def balance(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3(cfg)
 
-    targets = _resolve_targets(state, account, all_watched)
+    try:
+        targets = _resolve_targets(state, account, all_watched)
+    except typer.BadParameter as e:
+        emit_error("validation_error", command="balance", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     if token:
-        info = resolve_token(w3, cfg, state, token)
+        try:
+            info = resolve_token(w3, cfg, state, token)
+        except ValueError as e:
+            emit_error("not_found", command="balance", chain=cfg.name, reason=str(e))
+            raise typer.Exit(code=2)
         unit = info.symbol
         decimals = info.decimals
+        token_payload = {"symbol": info.symbol, "address": info.address, "decimals": info.decimals}
         fetcher = lambda addr: balance_of(w3, info.address, addr)
-        header_extra = f" [dim]({info.address})[/dim]"
     else:
         unit = cfg.native_symbol
         decimals = 18
+        token_payload = None
         fetcher = lambda addr: w3.eth.get_balance(w3.to_checksum_address(addr))
-        header_extra = ""
 
-    table = Table(
-        title=f"{unit}{header_extra} on [cyan]{cfg.name}[/cyan]",
-        show_header=True,
-        header_style="bold",
-    )
-    table.add_column("label")
-    table.add_column("address", style="dim")
-    table.add_column(f"balance ({unit})", justify="right")
-
+    balances: list[dict] = []
     for label, addr in targets:
         amt = fetcher(addr)
-        table.add_row(label, addr, format_units(amt, decimals))
+        balances.append({
+            "label": label,
+            "address": addr,
+            "amount_wei": str(amt),
+            "amount": format_units(amt, decimals),
+        })
 
-    console.print(table)
+    data = {
+        "ok": True,
+        "command": "balance",
+        "chain": cfg.name,
+        "data": {
+            "unit": unit,
+            "decimals": decimals,
+            "token": token_payload,
+            "balances": balances,
+        },
+    }
+
+    def render(d: dict) -> None:
+        x = d["data"]
+        title = x["unit"]
+        if x["token"]:
+            title = f"{x['unit']} [dim]({x['token']['address']})[/dim]"
+        title += f" on [cyan]{d['chain']}[/cyan]"
+
+        table = Table(title=title, show_header=True, header_style="bold")
+        table.add_column("label")
+        table.add_column("address", style="dim")
+        table.add_column(f"balance ({x['unit']})", justify="right")
+        for b in x["balances"]:
+            table.add_row(b["label"], b["address"], b["amount"])
+        stdout_console().print(table)
+
+    emit(data, render)

@@ -17,6 +17,7 @@ import typer
 
 from wallet.cli import _common
 from wallet.cli._common import confirm_and_broadcast
+from wallet.cli._output import OutputMode
 from wallet.core import policy as policy_mod
 from wallet.core.policy import Policy, save_policy
 from wallet.core.tx import PreparedTx
@@ -268,3 +269,146 @@ def test_agent_bypass_refused(isolated_dirs, force_caller_agent, mock_signing):
     assert mock_signing["n"] == 0
     events = _read_audit(isolated_dirs)
     assert "bypass:not-allowed-in-agent-mode" in events[-1]["policy_decision"]
+
+
+# --- 7. JSON output: success envelope schema --------------------------------
+
+
+def test_json_broadcast_emits_success_envelope(
+    isolated_dirs, force_caller_agent, mock_signing, monkeypatch, capsys
+):
+    addr = "0x" + "11" * 20
+    save_policy(Policy(
+        max_per_tx={"ETH": "0.1"},
+        recipient_allowlist=[addr],
+        first_send_warn=False,
+    ))
+    pt = _prepared(amount_wei=10**15, to=addr)
+
+    monkeypatch.setattr(OutputMode, "json", True)
+    try:
+        confirm_and_broadcast(
+            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            sender_account=MagicMock(), prepared=pt,
+            dry_run=False, yes=True, request_id="req-json-001",
+        )
+    finally:
+        OutputMode.json = False
+
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)  # must parse — schema stability
+    assert obj["ok"] is True
+    assert obj["command"] == "send"
+    assert obj["chain"] == "sepolia"
+    d = obj["data"]
+    assert d["phase"] == "broadcast"
+    assert d["kind"] == "native_transfer"
+    assert d["to"] == addr
+    assert d["amount_wei"] == str(10**15)
+    assert d["unit"] == "ETH"
+    assert d["request_id"] == "req-json-001"
+    assert d["outcome"] == "broadcast"
+    assert d["tx_hash"].startswith("0x")
+    assert "explorer_url" in d
+
+
+# --- 8. JSON output: error envelope schema ----------------------------------
+
+
+def test_json_policy_block_emits_error_envelope(
+    isolated_dirs, force_caller_agent, mock_signing, monkeypatch, capsys
+):
+    pt = _prepared(amount_wei=10**18, to="0x" + "22" * 20)
+
+    monkeypatch.setattr(OutputMode, "json", True)
+    try:
+        with pytest.raises(typer.Exit):
+            confirm_and_broadcast(
+                w3=MagicMock(), state=WalletState(), chain=_chain(),
+                sender_account=MagicMock(), prepared=pt,
+                dry_run=False, yes=True, request_id="req-blocked",
+            )
+    finally:
+        OutputMode.json = False
+
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+    assert obj["ok"] is False
+    assert obj["error"] == "policy_block"
+    assert obj["code"] == "policy_block"
+    assert "no-policy-configured" in obj["reason"]
+    assert obj["command"] == "send"
+    assert obj["chain"] == "sepolia"
+
+
+# --- 9. JSON output: missing --yes triggers confirmation_required -----------
+
+
+def test_json_without_yes_triggers_confirmation_required(
+    isolated_dirs, force_caller_agent, mock_signing, monkeypatch, capsys
+):
+    addr = "0x" + "11" * 20
+    save_policy(Policy(
+        max_per_tx={"ETH": "0.1"},
+        recipient_allowlist=[addr],
+        first_send_warn=False,
+    ))
+    pt = _prepared(amount_wei=10**15, to=addr)
+
+    monkeypatch.setattr(OutputMode, "json", True)
+    try:
+        with pytest.raises(typer.Exit) as exc:
+            confirm_and_broadcast(
+                w3=MagicMock(), state=WalletState(), chain=_chain(),
+                sender_account=MagicMock(), prepared=pt,
+                dry_run=False, yes=False, request_id="req-needs-yes",
+            )
+    finally:
+        OutputMode.json = False
+
+    assert exc.value.exit_code == 4
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert obj["ok"] is False
+    assert obj["error"] == "confirmation_required"
+    assert mock_signing["n"] == 0
+
+
+# --- 10. JSON output: idempotent replay envelope ----------------------------
+
+
+def test_json_idempotent_replay_envelope(
+    isolated_dirs, force_caller_agent, mock_signing, monkeypatch, capsys
+):
+    addr = "0x" + "11" * 20
+    save_policy(Policy(
+        max_per_tx={"ETH": "0.1"},
+        recipient_allowlist=[addr],
+        first_send_warn=False,
+    ))
+    pt = _prepared(amount_wei=10**15, to=addr)
+
+    # First call: real broadcast
+    confirm_and_broadcast(
+        w3=MagicMock(), state=WalletState(), chain=_chain(),
+        sender_account=MagicMock(), prepared=pt,
+        dry_run=False, yes=True, request_id="req-replay-json",
+    )
+    capsys.readouterr()  # discard
+
+    # Second call: same request_id, JSON mode
+    monkeypatch.setattr(OutputMode, "json", True)
+    try:
+        confirm_and_broadcast(
+            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            sender_account=MagicMock(), prepared=pt,
+            dry_run=False, yes=True, request_id="req-replay-json",
+        )
+    finally:
+        OutputMode.json = False
+
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert obj["ok"] is True
+    assert obj["data"]["phase"] == "idempotent_replay"
+    assert obj["data"]["outcome"] == "replayed_idempotent"
+    assert "tx_hash" in obj["data"]
+    assert "original_created_at" in obj["data"]

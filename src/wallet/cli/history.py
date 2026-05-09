@@ -3,16 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import typer
-from rich.console import Console
 from rich.table import Table
 from web3 import Web3
 
+from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units
 from wallet.services.explorer import EtherscanError, list_native_txs, list_token_txs
 from wallet.storage.state import load_state
-
-console = Console()
 
 
 def _resolve_target(state, account: str | None, address: str | None) -> tuple[str, str]:
@@ -32,18 +30,9 @@ def _resolve_target(state, account: str | None, address: str | None) -> tuple[st
     return a.address, a.name
 
 
-def _direction(target: str, frm: str, to: str) -> str:
-    t = target.lower()
-    if frm.lower() == t:
-        return "[red]OUT[/red]"
-    if (to or "").lower() == t:
-        return "[green]IN [/green]"
-    return "    "
-
-
 def _ts(s: str) -> str:
     try:
-        return datetime.fromtimestamp(int(s), tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        return datetime.fromtimestamp(int(s), tz=timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     except (ValueError, TypeError):
         return s
 
@@ -58,59 +47,104 @@ def history(
     """Show recent transactions via Etherscan v2 API."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    target_addr, target_label = _resolve_target(state, account, address)
 
     try:
-        txs = (
+        target_addr, target_label = _resolve_target(state, account, address)
+    except typer.BadParameter as e:
+        emit_error("validation_error", command="history", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        raw_txs = (
             list_token_txs(cfg, target_addr, limit=limit)
             if tokens
             else list_native_txs(cfg, target_addr, limit=limit)
         )
     except EtherscanError as e:
-        console.print(f"[red]{e}[/red]")
+        emit_error("rpc_error", command="history", chain=cfg.name, reason=str(e))
         raise typer.Exit(code=1)
 
-    if not txs:
-        console.print(f"[dim]no transactions for {target_label} ({target_addr})[/dim]")
-        return
-
-    table = Table(
-        title=f"{'token transfers' if tokens else 'transactions'} for "
-              f"[bold]{target_label}[/bold] ({target_addr}) on [cyan]{cfg.name}[/cyan]",
-        show_header=True,
-        header_style="bold",
-    )
-    table.add_column("when", style="dim")
-    table.add_column("dir")
-    table.add_column("counterparty", style="dim")
-    table.add_column("amount", justify="right")
-    table.add_column("status")
-    table.add_column("hash", style="dim")
-
-    for t in txs:
+    transactions: list[dict] = []
+    for t in raw_txs:
         frm = t.get("from", "")
         to = t.get("to", "")
-        counter = to if frm.lower() == target_addr.lower() else frm
-
+        target_low = target_addr.lower()
+        direction = "out" if frm.lower() == target_low else "in" if to.lower() == target_low else "other"
         if tokens:
             decimals = int(t.get("tokenDecimal", "18"))
             symbol = t.get("tokenSymbol", "?")
-            amount = format_units(int(t.get("value", "0")), decimals)
-            amount_str = f"{amount} {symbol}"
-            status = ""  # tokentx endpoint doesn't return per-tx error; presence implies success
+            amount_wei = int(t.get("value", "0"))
+            unit = symbol
+            ok = True  # tokentx endpoint omits per-tx error
         else:
-            amount = format_units(int(t.get("value", "0")), 18)
-            amount_str = f"{amount} {cfg.native_symbol}"
+            decimals = 18
+            amount_wei = int(t.get("value", "0"))
+            unit = cfg.native_symbol
             ok = t.get("txreceipt_status", "1") == "1" and t.get("isError", "0") == "0"
-            status = "[green]ok[/green]" if ok else "[red]revert[/red]"
+        transactions.append({
+            "ts": _ts(t.get("timeStamp", "")),
+            "block_number": int(t.get("blockNumber", "0") or "0"),
+            "direction": direction,
+            "from": frm,
+            "to": to,
+            "amount_wei": str(amount_wei),
+            "amount": format_units(amount_wei, decimals),
+            "unit": unit,
+            "decimals": decimals,
+            "hash": t.get("hash", ""),
+            "ok": ok,
+        })
 
-        table.add_row(
-            _ts(t.get("timeStamp", "")),
-            _direction(target_addr, frm, to),
-            f"{counter[:10]}…{counter[-6:]}" if counter else "-",
-            amount_str,
-            status,
-            t.get("hash", "")[:12] + "…",
+    data = {
+        "ok": True,
+        "command": "history",
+        "chain": cfg.name,
+        "data": {
+            "address": target_addr,
+            "label": target_label,
+            "kind": "tokens" if tokens else "native",
+            "limit": limit,
+            "count": len(transactions),
+            "transactions": transactions,
+        },
+    }
+
+    def render(d: dict) -> None:
+        x = d["data"]
+        if not x["transactions"]:
+            stdout_console().print(
+                f"[dim]no transactions for {x['label']} ({x['address']})[/dim]"
+            )
+            return
+        kind = "token transfers" if x["kind"] == "tokens" else "transactions"
+        table = Table(
+            title=f"{kind} for [bold]{x['label']}[/bold] ({x['address']}) on [cyan]{d['chain']}[/cyan]",
+            show_header=True,
+            header_style="bold",
         )
+        table.add_column("when", style="dim")
+        table.add_column("dir")
+        table.add_column("counterparty", style="dim")
+        table.add_column("amount", justify="right")
+        table.add_column("status")
+        table.add_column("hash", style="dim")
+        for t in x["transactions"]:
+            counter = t["to"] if t["direction"] == "out" else t["from"]
+            counter_short = f"{counter[:10]}…{counter[-6:]}" if counter else "-"
+            dir_label = (
+                "[red]OUT[/red]" if t["direction"] == "out"
+                else "[green]IN [/green]" if t["direction"] == "in"
+                else "    "
+            )
+            status = "[green]ok[/green]" if t["ok"] else "[red]revert[/red]"
+            table.add_row(
+                t["ts"],
+                dir_label,
+                counter_short,
+                f"{t['amount']} {t['unit']}",
+                status,
+                t["hash"][:12] + "…",
+            )
+        stdout_console().print(table)
 
-    console.print(table)
+    emit(data, render)

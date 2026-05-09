@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from wallet.cli._common import confirm_and_broadcast, resolve_address
+from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, make_web3, parse_units
 from wallet.core.tokens import MAX_UINT256, allowance as get_allowance, resolve_token
@@ -12,7 +12,6 @@ from wallet.core.tx import prepare_erc20_approve
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="ERC-20 approval management")
-console = Console()
 
 
 def _sender(state, account: str | None):
@@ -45,17 +44,30 @@ def set_allowance(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3(cfg)
 
-    sender = _sender(state, account)
-    spender_addr = resolve_address(state, spender)
-    info = resolve_token(w3, cfg, state, token)
+    try:
+        sender = _sender(state, account)
+        spender_addr = resolve_address(state, spender)
+    except typer.BadParameter as e:
+        emit_error("validation_error", command="approve", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        info = resolve_token(w3, cfg, state, token)
+    except ValueError as e:
+        emit_error("not_found", command="approve", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     if unlimited:
         if amount is not None:
-            raise typer.BadParameter("cannot pass both an amount and --unlimited")
+            emit_error("validation_error", command="approve", chain=cfg.name,
+                       reason="cannot pass both an amount and --unlimited")
+            raise typer.Exit(code=2)
         amount_raw = MAX_UINT256
     else:
         if amount is None:
-            raise typer.BadParameter("amount required (or use --unlimited)")
+            emit_error("validation_error", command="approve", chain=cfg.name,
+                       reason="amount required (or use --unlimited)")
+            raise typer.Exit(code=2)
         amount_raw = parse_units(amount, info.decimals)
 
     prepared = prepare_erc20_approve(
@@ -77,31 +89,61 @@ def show(
     chain: str | None = typer.Option(None, "--chain"),
 ) -> None:
     """Show how much a spender is allowed to move on the owner's behalf."""
-    if not spender:
-        raise typer.BadParameter("--spender is required")
-
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
+
+    if not spender:
+        emit_error("validation_error", command="approve.show", chain=cfg.name,
+                   reason="--spender is required")
+        raise typer.Exit(code=2)
+
     w3 = make_web3(cfg)
 
-    info = resolve_token(w3, cfg, state, token)
-    owner_addr = resolve_address(state, owner) if owner else _sender(state, None).address
-    spender_addr = resolve_address(state, spender)
+    try:
+        info_ = resolve_token(w3, cfg, state, token)
+    except ValueError as e:
+        emit_error("not_found", command="approve.show", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
-    raw = get_allowance(w3, info.address, owner_addr, spender_addr)
+    try:
+        owner_addr = resolve_address(state, owner) if owner else _sender(state, None).address
+        spender_addr = resolve_address(state, spender)
+    except typer.BadParameter as e:
+        emit_error("validation_error", command="approve.show", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    raw = get_allowance(w3, info_.address, owner_addr, spender_addr)
     is_max = raw == MAX_UINT256
 
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="bold cyan")
-    table.add_column()
-    table.add_row("token", f"{info.symbol} ({info.address})")
-    table.add_row("owner", owner_addr)
-    table.add_row("spender", spender_addr)
-    table.add_row(
-        "allowance",
-        "[red]UNLIMITED (max uint256)[/red]" if is_max else f"{format_units(raw, info.decimals)} {info.symbol}",
-    )
-    console.print(table)
+    data = {
+        "ok": True,
+        "command": "approve.show",
+        "chain": cfg.name,
+        "data": {
+            "token": {"symbol": info_.symbol, "address": info_.address, "decimals": info_.decimals},
+            "owner": owner_addr,
+            "spender": spender_addr,
+            "allowance_wei": str(raw),
+            "allowance": format_units(raw, info_.decimals),
+            "is_unlimited": is_max,
+        },
+    }
+
+    def render(d):
+        x = d["data"]
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column(style="bold cyan")
+        table.add_column()
+        table.add_row("token", f"{x['token']['symbol']} ({x['token']['address']})")
+        table.add_row("owner", x["owner"])
+        table.add_row("spender", x["spender"])
+        if x["is_unlimited"]:
+            table.add_row("allowance", "[red]UNLIMITED (max uint256)[/red]")
+        else:
+            table.add_row("allowance", f"{x['allowance']} {x['token']['symbol']}")
+        stdout_console().print(table)
+
+    emit(data, render)
 
 
 @app.command("revoke")
@@ -120,9 +162,18 @@ def revoke(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3(cfg)
 
-    sender = _sender(state, account)
-    spender_addr = resolve_address(state, spender)
-    info = resolve_token(w3, cfg, state, token)
+    try:
+        sender = _sender(state, account)
+        spender_addr = resolve_address(state, spender)
+    except typer.BadParameter as e:
+        emit_error("validation_error", command="revoke", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        info = resolve_token(w3, cfg, state, token)
+    except ValueError as e:
+        emit_error("not_found", command="revoke", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     prepared = prepare_erc20_approve(
         w3, cfg, sender.address, info.address, spender_addr, 0,
