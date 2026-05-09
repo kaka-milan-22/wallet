@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Virtual envs / package manager caches
+.venv/
+.python-version.local
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets / env (defense in depth — these should never be created in-tree,
+# but block them anyway in case of future mistakes)
+.env
+.env.*
+*.pem
+*.key
+*.keystore
+state.json
+secrets.json
+mnemonic*.txt
+chains.local.json
+
+# User-local overrides
+*.local
