@@ -29,7 +29,7 @@ wallet integration; the other two Tier-1-feeling items are operator setup.
 
 | Gap | Why it matters | Sketch |
 |---|---|---|
-| **Hardware wallet integration (Ledger / Trezor)** | Hot mnemonic in agent-vault is fine for testnet and small daily-spend hot accounts. Anything beyond a few hundred dollars belongs on a device that never exposes the seed. | Refactor `core/signer.py` to swap in `eth_account.LedgerSignerMiddleware` (or `ledgereth`). Wallet builds the unsigned tx; signing happens on-device with user button press. Keystore-backed accounts and Ledger accounts coexist in `state.json`. |
+| **Hardware wallet integration (Ledger / Trezor)** | Hot mnemonic in agent-vault is fine for testnet and small daily-spend hot accounts. Anything beyond a few hundred dollars belongs on a device that never exposes the seed. **Full rationale + threat model + integration sketch:** [`docs/why_hard_wallet.md`](docs/why_hard_wallet.md). | Refactor `core/signer.py` to dispatch on `account.account_type` (`hd_mnemonic` vs `ledger`). Wallet builds the unsigned tx; signing happens on-device with user button press. Keystore-backed accounts and Ledger accounts coexist in `state.json`. |
 
 ### Configuration setup — no code change needed
 
