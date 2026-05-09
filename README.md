@@ -4,10 +4,12 @@ A Python CLI for Ethereum-compatible chains. Phase 1 covers the **non-DeFi
 basics**: accounts, balances, transfers, ERC-20 approvals, transaction history,
 address book, and watch-only addresses.
 
-Mnemonics live in `agent-vault`; the wallet process reads them via a one-shot
-temp file (created by `agent-vault write` and unlinked immediately after) and
-keeps them in memory only for the time it takes to derive a private key and
-sign one transaction.
+Mnemonics live in `agent-vault`; the wallet process retrieves them through a
+**Unix named pipe (FIFO)** — `agent-vault` writes the substituted plaintext
+into the pipe inode, this process reads it from the kernel buffer, and the
+inode is unlinked. The plaintext **never lands on disk**, only in two process
+memories briefly. A legacy 0600 temp-file path (`_reveal_via_tempfile`) is
+kept as a fallback for platforms where the FIFO transport fails.
 
 ## Install
 
@@ -127,6 +129,13 @@ cat "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"
 # (3) Independent secret audit
 agent-vault scan "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"
 # Should report 0 secrets in the file.
+
+# (4) Confirm no temp files leak during a real signing (run in another shell)
+while true; do ls /tmp/wallet-secret-* 2>/dev/null && echo LEAK; done &
+uv run wallet send <to> 0.0001 --broadcast
+# Watcher should print no LEAK lines — the FIFO transport keeps plaintext off
+# disk. Only if the FIFO path fails will you see /tmp/wallet-secret-* appear
+# briefly (the fallback path).
 ```
 
 ## Tests
@@ -137,7 +146,8 @@ uv run pytest
 
 Covers BIP-39 derivation against Hardhat's well-known fixed mnemonic, state
 file roundtrip + 0600 permissions, EIP-1559 tx field construction, fee floor
-behaviour, simulation revert surfacing, and amount fixed-point arithmetic.
+behaviour, simulation revert surfacing, amount fixed-point arithmetic, and
+the FIFO-based vault.reveal() transport including the tempfile fallback.
 
 ## Architecture
 
