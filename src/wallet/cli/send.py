@@ -21,6 +21,8 @@ def send(
     chain: str | None = typer.Option(None, "--chain", help="Chain name override"),
     broadcast: bool = typer.Option(False, "--broadcast/--dry-run", help="Default is dry-run; pass --broadcast to submit"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only; ignored in agent mode)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key (uuid). Required for non-TTY broadcast."),
 ) -> None:
     """Send native ETH or an ERC-20 token to an address.
 
@@ -57,4 +59,6 @@ def send(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast,
         yes=yes,
+        policy_bypass=policy_bypass,
+        request_id=request_id,
     )

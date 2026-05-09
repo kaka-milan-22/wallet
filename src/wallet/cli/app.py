@@ -7,6 +7,7 @@ from wallet import __version__
 from wallet.cli import account as account_cli
 from wallet.cli import approve as approve_cli
 from wallet.cli import book as book_cli
+from wallet.cli import policy as policy_cli
 from wallet.cli import token as token_cli
 from wallet.cli import watch as watch_cli
 from wallet.cli.balance import balance as balance_cmd
@@ -23,6 +24,7 @@ app.add_typer(approve_cli.app, name="approve")
 app.add_typer(book_cli.app, name="book")
 app.add_typer(watch_cli.app, name="watch")
 app.add_typer(token_cli.app, name="token")
+app.add_typer(policy_cli.app, name="policy")
 app.command("balance")(balance_cmd)
 app.command("send")(send_cmd)
 app.command("history")(history_cmd)

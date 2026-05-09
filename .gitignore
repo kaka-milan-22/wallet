@@ -35,6 +35,9 @@ Thumbs.db
 *.key
 *.keystore
 state.json
+policy.json
+audit.log
+idempotency.json
 secrets.json
 mnemonic*.txt
 chains.local.json

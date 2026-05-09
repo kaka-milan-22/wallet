@@ -37,6 +37,8 @@ def set_allowance(
     chain: str | None = typer.Option(None, "--chain"),
     broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
     yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key (uuid). Required for non-TTY broadcast."),
 ) -> None:
     """Approve a spender to move tokens on your behalf."""
     state = load_state()
@@ -60,7 +62,11 @@ def set_allowance(
         w3, cfg, sender.address, info.address, spender_addr, amount_raw,
         info.symbol, info.decimals,
     )
-    confirm_and_broadcast(w3, state, cfg, sender, prepared, dry_run=not broadcast, yes=yes)
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes, policy_bypass=policy_bypass,
+        request_id=request_id,
+    )
 
 
 @app.command("show")
@@ -106,6 +112,8 @@ def revoke(
     chain: str | None = typer.Option(None, "--chain"),
     broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
     yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key (uuid). Required for non-TTY broadcast."),
 ) -> None:
     """Revoke a spender's allowance (sets it to 0)."""
     state = load_state()
@@ -120,4 +128,8 @@ def revoke(
         w3, cfg, sender.address, info.address, spender_addr, 0,
         info.symbol, info.decimals,
     )
-    confirm_and_broadcast(w3, state, cfg, sender, prepared, dry_run=not broadcast, yes=yes)
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes, policy_bypass=policy_bypass,
+        request_id=request_id,
+    )

@@ -138,39 +138,93 @@ uv run wallet send <to> 0.0001 --broadcast
 # briefly (the fallback path).
 ```
 
+## Agent-callable usage
+
+The wallet defends against agent abuse with a four-layer stack:
+
+1. **Skill** (`docs/skills/wallet-agent.skill.md`) — soft guidance for the agent
+2. **Policy** (`~/.wallet/policy.json`) — hard pre-broadcast limits
+3. **Idempotency** (`~/.wallet/idempotency.json`) — same `--request-id` returns the cached result, no double-spend on retry
+4. **Audit log** (`~/.wallet/audit.log`) — append-only JSON-lines record of every broadcast attempt; not exposed via the CLI
+
+### Initialize the policy (do this once, in your terminal)
+
+```sh
+uv run wallet policy init        # writes default ~/.wallet/policy.json
+$EDITOR "$(uv run wallet info | grep state | awk '{print $3,$4,$5}' | xargs dirname)/policy.json"
+# add specific addresses to recipient_allowlist / contract_allowlist
+uv run wallet policy lint        # warns about weak / empty fields
+```
+
+Default policy starts with caps but **empty allowlists** — agents are denied
+until you explicitly add recipients/contracts you trust. This is intentional:
+wide-open default + opt-out is unsafe.
+
+### Install the agent skill (Claude Code)
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)/docs/skills/wallet-agent.skill.md" ~/.claude/skills/wallet-agent.skill.md
+```
+
+The skill tells the agent the right call patterns (always dry-run first, fresh
+request-id on every broadcast, never `--unlimited` / `--policy-bypass`).
+
+### What the agent can / cannot do
+
+| Operation | Agent | TTY |
+|---|---|---|
+| `balance` / `history` / `account list` | ✓ | ✓ |
+| `send` / `approve set` / `revoke` (dry-run) | ✓ | ✓ |
+| `send` / `approve` (broadcast) | ✓ if within policy + has `--request-id` | ✓ |
+| `--policy-bypass` | rejected | warns, then proceeds |
+| `--unlimited` approve | rejected by default policy | rejected by default policy |
+| `account create` / `import` | refuse — runs in TTY only | ✓ (mnemonic shown to terminal) |
+| `policy init` | refuse | ✓ |
+
 ## Tests
 
 ```sh
 uv run pytest
 ```
 
-Covers BIP-39 derivation against Hardhat's well-known fixed mnemonic, state
-file roundtrip + 0600 permissions, EIP-1559 tx field construction, fee floor
-behaviour, simulation revert surfacing, amount fixed-point arithmetic, and
-the FIFO-based vault.reveal() transport including the tempfile fallback.
+Covers BIP-39 derivation against Hardhat's fixed mnemonic, state file
+roundtrip + 0600 permissions, EIP-1559 tx field construction, fee floor
+behaviour, simulation revert surfacing, fixed-point amount math, the FIFO
+vault transport with tempfile fallback, **policy decision tree across all
+branches** (sentinel / unlimited approve / cap exceeded / first-send),
+**idempotency lookup / record / mismatch / TTL sweep**, audit log atomicity
+across concurrent appends, and TTY/agent caller classification.
 
 ## Architecture
 
 ```
 src/wallet/
   cli/                 typer command tree + presentation (rich)
+    _caller.py         TTY vs agent classification (used by every gate)
+    _common.py         confirm_and_broadcast — preview / policy / idempotency / sign / audit
+    policy.py          `wallet policy show / init / lint`
   core/
     config.py          ChainConfig — chain_id, RPC, explorer, builtin tokens
     hd.py              BIP-39 / BIP-44 (eth-account)
+    policy.py          Policy schema + evaluate(prepared, state, caller, *, bypass)
     rpc.py             Web3 factory, format_units / parse_units
     signer.py          mnemonic → private key → sign (in-memory only)
     tokens.py          ERC-20 ABI + helpers (balanceOf, allowance, fetch)
     tx.py              build/simulate/estimate pipeline; EIP-1559 fee policy
   storage/
+    audit.py           ~/.wallet/audit.log JSON-lines append-only writer (no CLI read)
+    idempotency.py     ~/.wallet/idempotency.json — request_id → cached result
     state.py           pydantic schema for ~/.wallet/state.json
-    vault.py           agent-vault subprocess wrapper (has / reveal)
+    vault.py           agent-vault wrapper: FIFO transport + tempfile fallback
   services/
     explorer.py        Etherscan v2 client
 ```
 
-Sending commands all go through `core/tx.py` → preview → confirm →
-`core/signer.py`. The signer is the only code path that touches mnemonic
-plaintext; it derives, signs, and returns raw bytes.
+Sending commands all go through `cli/_common.py:confirm_and_broadcast`:
+preview → policy.evaluate → idempotency.lookup → confirm → sign → broadcast →
+idempotency.record + audit.write. Every layer can short-circuit and writes
+its own audit entry.
 
 ## Phase 2 (not in this repo yet)
 
