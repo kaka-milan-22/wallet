@@ -1,15 +1,42 @@
-# wallet — DeFi CLI wallet (Phase 1)
+# wallet
 
-A Python CLI for Ethereum-compatible chains. Phase 1 covers the **non-DeFi
-basics**: accounts, balances, transfers, ERC-20 approvals, transaction history,
-address book, and watch-only addresses.
+An **AI-agent-native EVM wallet** — Python CLI, JSON I/O, policy-gated writes,
+append-only audit. MetaMask is for humans clicking buttons in browsers; this
+is for LLM agents, scripts, and cron jobs calling `wallet send / swap / aave
+borrow` from a terminal with safety rails an autonomous caller can't bypass.
 
-Mnemonics live in `agent-vault`; the wallet process retrieves them through a
-**Unix named pipe (FIFO)** — `agent-vault` writes the substituted plaintext
-into the pipe inode, this process reads it from the kernel buffer, and the
-inode is unlinked. The plaintext **never lands on disk**, only in two process
-memories briefly. A legacy 0600 temp-file path (`_reveal_via_tempfile`) is
-kept as a fallback for platforms where the FIFO transport fails.
+What you get today (Sepolia tested end-to-end):
+
+- **Accounts** — BIP-39 HD wallet; mnemonic encrypted in `agent-vault`,
+  retrieved into the signing process via Unix FIFO (kernel pipe, never on disk).
+- **Transfers** — ETH + ERC-20 send, ERC-20 approve / allowance / revoke.
+- **Swap** — `wallet swap` via 0x aggregator with automatic fallback to direct
+  Uniswap V3.
+- **Lending** — `wallet aave supply / withdraw / borrow / repay` against Aave V3,
+  with a configurable `min_health_factor` policy gate that blocks risky ops
+  *before* Aave's chain-level HF >= 1 revert.
+- **On-chain faucet** — `wallet aave faucet` mints testnet mock tokens without
+  needing a browser wallet.
+
+Designed around four safety layers, each catches a different failure mode:
+
+| Layer | Catches |
+|---|---|
+| **skill** (`docs/skills/wallet-agent.skill.md`) | Agent guidance: how to call, what to never do |
+| **policy** (`~/.wallet/policy.json`) | Hard pre-broadcast block: spending caps, recipient & contract allowlists, unlimited-approve deny, `min_health_factor`, sentinel blocklist |
+| **idempotency** (`~/.wallet/idempotency.json`) | Retry safety: same `--request-id` returns the cached `tx_hash` instead of double-spending |
+| **audit** (`~/.wallet/audit.log`) | Append-only JSON-lines record of every signing attempt (broadcast, rejected, replayed); not exposed via any CLI read |
+
+**Not** a MetaMask replacement: this wallet doesn't speak WalletConnect, doesn't
+inject `window.ethereum`, doesn't render dApp UIs. It talks to contracts
+directly — DEX aggregator quotes via API, Aave Pool / Uniswap router via ABI.
+For browser-based dApp interaction keep MetaMask alongside; they cover different
+use cases (human in front of UI vs. agent in front of terminal).
+
+**Not** mainnet-recommended yet for non-trivial value: see
+[`ROADMAP.md`](ROADMAP.md) — the single remaining code blocker is hardware
+wallet (Ledger) integration. See [`docs/why_hard_wallet.md`](docs/why_hard_wallet.md)
+for the full rationale.
 
 ## Install
 
