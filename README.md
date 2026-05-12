@@ -127,6 +127,15 @@ uv run wallet aave withdraw USDC --max --broadcast --yes       # withdraw entire
 # Aave reverts if a withdraw would drop your HF < 1.0; our `_simulate` surfaces this
 # as a clean `simulation_reverted` error before any signing.
 
+# Aave V3 — borrow / repay (Phase 2 PR5)
+uv run wallet aave borrow USDC 50                              # dry-run, shows current + estimated HF
+uv run wallet aave borrow USDC 50 --broadcast --yes            # borrow $50 at variable rate
+uv run wallet approve set 0x94a9...8 0x6Ae43...8951 50 --broadcast --yes  # one-time approve to repay
+uv run wallet aave repay USDC 50 --broadcast --yes             # repay partial
+uv run wallet aave repay USDC --max --broadcast --yes          # repay entire variable debt
+# Set `min_health_factor` in policy.json to block borrow/withdraw before HF drops
+# below your comfort line (Aave's own threshold is 1.0; setting 1.5+ gives margin).
+
 # History
 uv run wallet history                       # default account, native + contract calls
 uv run wallet history --tokens              # ERC-20 transfers

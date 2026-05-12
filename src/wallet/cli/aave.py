@@ -11,13 +11,16 @@ from web3.exceptions import ContractLogicError as _ContractLogicError
 from wallet.cli._common import confirm_and_broadcast
 from wallet.core.rpc import parse_units
 from wallet.protocols.aave import (
+    REPAY_MAX_AMOUNT,
     WITHDRAW_MAX_AMOUNT,
     base_to_usd,
     get_account_summary,
     get_all_rates,
     get_all_reserves,
     get_user_positions,
+    prepare_borrow,
     prepare_faucet_mint,
+    prepare_repay,
     prepare_supply,
     prepare_withdraw,
     ray_to_pct,
@@ -486,6 +489,174 @@ def faucet(
         _emit_err(
             "simulation_reverted",
             command="aave.faucet", chain=cfg.name,
+            reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
+
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes,
+        policy_bypass=policy_bypass, request_id=request_id,
+    )
+
+
+@app.command("borrow")
+def borrow(
+    token: str = typer.Argument(..., help="Aave reserve symbol or 0x address"),
+    amount: str = typer.Argument(..., help="Amount in human units"),
+    account: str | None = typer.Option(None, "--account", "-a"),
+    chain: str | None = typer.Option(None, "--chain"),
+    broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+) -> None:
+    """Borrow tokens from Aave V3 against your supplied collateral (variable rate).
+
+    Aave reverts if the post-borrow health factor would drop below 1.0.
+    Setting `min_health_factor` in policy.json adds a more conservative pre-flight
+    block (e.g. 1.5) — `_simulate` catches Aave-level reverts, the policy gate
+    catches sooner.
+    """
+    from wallet.cli._output import emit_error as _emit_err
+    from wallet.core.config import get_chain
+    from wallet.core.rpc import make_web3
+
+    state = load_state()
+    cfg = get_chain(chain or state.default_chain)
+    w3 = make_web3(cfg)
+
+    if account:
+        sender = state.find_account(account)
+        if not sender:
+            _emit_err("validation_error", command="aave.borrow", chain=cfg.name,
+                      reason=f"unknown account: {account}")
+            raise typer.Exit(code=2)
+    else:
+        sender = state.get_default_account()
+        if not sender:
+            _emit_err("validation_error", command="aave.borrow", chain=cfg.name,
+                      reason="no default account; pass --account")
+            raise typer.Exit(code=2)
+
+    try:
+        reserve = resolve_aave_reserve(w3, cfg, token)
+    except ValueError as e:
+        _emit_err("not_found", command="aave.borrow", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        amount_wei = parse_units(amount, reserve.decimals)
+    except ValueError as e:
+        _emit_err("validation_error", command="aave.borrow", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        prepared = prepare_borrow(w3, cfg, sender.address, reserve, amount_wei)
+    except _ContractLogicError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.borrow", chain=cfg.name,
+            reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
+
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes,
+        policy_bypass=policy_bypass, request_id=request_id,
+    )
+
+
+@app.command("repay")
+def repay(
+    token: str = typer.Argument(..., help="Aave reserve symbol or 0x address"),
+    amount: str = typer.Argument(None, help="Amount in human units (omit if --max)"),
+    max_: bool = typer.Option(False, "--max", help="Repay entire variable debt"),
+    account: str | None = typer.Option(None, "--account", "-a"),
+    chain: str | None = typer.Option(None, "--chain"),
+    broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+) -> None:
+    """Repay an Aave V3 variable-rate borrow.
+
+    Requires prior `wallet approve set <token> <pool> <amount>` because repay
+    pulls tokens from your wallet to settle the debt.
+    """
+    from wallet.cli._output import emit_error as _emit_err
+    from wallet.core.config import get_chain
+    from wallet.core.rpc import format_units, make_web3
+
+    state = load_state()
+    cfg = get_chain(chain or state.default_chain)
+    w3 = make_web3(cfg)
+
+    if account:
+        sender = state.find_account(account)
+        if not sender:
+            _emit_err("validation_error", command="aave.repay", chain=cfg.name,
+                      reason=f"unknown account: {account}")
+            raise typer.Exit(code=2)
+    else:
+        sender = state.get_default_account()
+        if not sender:
+            _emit_err("validation_error", command="aave.repay", chain=cfg.name,
+                      reason="no default account; pass --account")
+            raise typer.Exit(code=2)
+
+    try:
+        reserve = resolve_aave_reserve(w3, cfg, token)
+    except ValueError as e:
+        _emit_err("not_found", command="aave.repay", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    if max_:
+        if amount is not None:
+            _emit_err("validation_error", command="aave.repay", chain=cfg.name,
+                      reason="cannot pass both --max and an amount")
+            raise typer.Exit(code=2)
+        amount_wei = REPAY_MAX_AMOUNT
+    else:
+        if amount is None:
+            _emit_err("validation_error", command="aave.repay", chain=cfg.name,
+                      reason="amount required (or use --max)")
+            raise typer.Exit(code=2)
+        try:
+            amount_wei = parse_units(amount, reserve.decimals)
+        except ValueError as e:
+            _emit_err("validation_error", command="aave.repay", chain=cfg.name, reason=str(e))
+            raise typer.Exit(code=2)
+
+    try:
+        prepared = prepare_repay(w3, cfg, sender.address, reserve, amount_wei)
+    except InsufficientAllowance as e:
+        _emit_err(
+            "insufficient_allowance",
+            command="aave.repay", chain=cfg.name,
+            reason=str(e),
+            data={
+                "token_symbol": e.token_symbol,
+                "token_address": e.token_address,
+                "spender": e.spender,
+                "current_wei": str(e.current_wei),
+                "current": format_units(e.current_wei, reserve.decimals),
+                "required_wei": str(e.required_wei),
+                "required": format_units(e.required_wei, reserve.decimals),
+                "suggested_command": (
+                    f"wallet approve set {e.token_symbol} {e.spender} "
+                    f"{format_units(e.required_wei, reserve.decimals)}"
+                ),
+            },
+        )
+        raise typer.Exit(code=2)
+    except _ContractLogicError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.repay", chain=cfg.name,
             reason=_format_revert(e),
             data=_aave_error_hint(str(e)),
         )

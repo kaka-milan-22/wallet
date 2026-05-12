@@ -50,6 +50,12 @@ class Policy(BaseModel):
     sentinel_blocklist: list[str] = Field(default_factory=list)
     """Hard deny — overrides any allowlist match. For known scams / drainers."""
 
+    min_health_factor: float | None = None
+    """When set, borrow / withdraw is blocked if the estimated post-op
+    health factor would drop below this value. Aave's own check reverts at
+    HF < 1.0; setting `min_health_factor: 1.5` blocks before that, giving
+    a comfortable margin against price-volatility liquidation."""
+
 
 class Decision(BaseModel):
     allowed: bool
@@ -104,6 +110,10 @@ def _category(prepared) -> str:
         return "aave_withdraw"
     if kind == "aave faucet":
         return "aave_faucet"
+    if kind == "aave borrow":
+        return "aave_borrow"
+    if kind == "aave repay":
+        return "aave_repay"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -295,6 +305,38 @@ def evaluate(
                 reason="aave-faucet-not-in-contract-allowlist",
                 severity="block",
             )
+
+    # --- 3e. aave borrow / repay: pool in contract_allowlist ---
+    if category in ("aave_borrow", "aave_repay"):
+        pool = desc.get("to")
+        contracts = {a.lower() for a in policy.contract_allowlist}
+        if pool and pool.lower() not in contracts:
+            return Decision(
+                allowed=False,
+                reason="aave-pool-not-in-contract-allowlist",
+                severity="block",
+            )
+
+    # --- 3f. min_health_factor enforcement for ops that reduce HF ---
+    if (
+        policy.min_health_factor is not None
+        and category in ("aave_borrow", "aave_withdraw")
+    ):
+        hf_after_str = desc.get("aave_estimated_hf_after")
+        if hf_after_str is not None and hf_after_str != "inf":
+            try:
+                hf_after = float(hf_after_str)
+            except (ValueError, TypeError):
+                hf_after = None
+            if hf_after is not None and hf_after < policy.min_health_factor:
+                return Decision(
+                    allowed=False,
+                    reason=(
+                        f"hf-would-drop-below-min:{hf_after:.3f}<"
+                        f"{policy.min_health_factor}"
+                    ),
+                    severity="block",
+                )
 
     # --- 4. per-tx amount cap ---
     if unit and unit in policy.max_per_tx:

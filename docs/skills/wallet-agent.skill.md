@@ -70,6 +70,16 @@ wallet aave supply USDC 10 --broadcast --yes --request-id "$(uuidgen)"    # real
 wallet aave withdraw USDC 5 --broadcast --yes --request-id "$(uuidgen)"   # partial withdraw
 wallet aave withdraw USDC --max --broadcast --yes --request-id "$(uuidgen)"  # full withdraw
 
+# Aave V3 borrow / repay (Phase 2 PR5)
+wallet aave borrow USDC 50                                                # dry-run, shows current + estimated HF
+wallet aave borrow USDC 50 --broadcast --yes --request-id "$(uuidgen)"    # variable-rate borrow
+wallet aave repay USDC 50 --broadcast --yes --request-id "$(uuidgen)"     # partial repay
+wallet aave repay USDC --max --broadcast --yes --request-id "$(uuidgen)"  # full repay
+# When policy.min_health_factor is set, borrow/withdraw is pre-flighted: if the
+# estimated post-op HF would drop below the threshold, you get
+# `error: policy_block, code: hf-would-drop-below-min:X<Y`. Don't try to brute-
+# force around it — ask the user to either reduce the amount or change policy.
+
 # Notes for agents:
 #  - The Aave Pool address (e.g. 0x6Ae43..8951 on Sepolia) must be in
 #    policy.contract_allowlist. If you hit `aave-pool-not-in-contract-allowlist`,

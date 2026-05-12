@@ -49,6 +49,7 @@ _BUILTIN_PRESETS: dict[str, dict] = {
                 "data_provider": "0x3e9708d80f7B3e43118013075F7e95CE3AB31F31",
                 "addresses_provider": "0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A",
                 "faucet": "0xC959483DBa39aa9E78757139af0e9a2EDEb3f42D",
+                "oracle": "0x2da88497588bf89281816106C7259e31AF45a663",
             },
         },
     },

@@ -416,6 +416,102 @@ def test_aave_faucet_allowed_when_in_contract_allowlist(isolated_files):
     assert d.allowed
 
 
+# --- min_health_factor policy gate -------------------------------------------
+
+
+def test_borrow_blocked_when_hf_after_below_min_health_factor(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        contract_allowlist=[pool],
+        min_health_factor=1.5,
+    ))
+    pt = FakePrepared(
+        kind="aave borrow", to=pool,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,
+        aave_estimated_hf_after="1.20",  # below 1.5 threshold
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert "hf-would-drop-below-min" in d.reason
+    assert "1.5" in d.reason
+
+
+def test_borrow_allowed_when_hf_after_above_min_health_factor(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        contract_allowlist=[pool],
+        min_health_factor=1.5,
+    ))
+    pt = FakePrepared(
+        kind="aave borrow", to=pool,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,
+        aave_estimated_hf_after="2.50",
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_borrow_allowed_when_hf_after_inf(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        contract_allowlist=[pool],
+        min_health_factor=1.5,
+    ))
+    pt = FakePrepared(
+        kind="aave borrow", to=pool,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,
+        aave_estimated_hf_after="inf",
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_withdraw_also_subject_to_min_health_factor(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        contract_allowlist=[pool],
+        min_health_factor=2.0,
+    ))
+    pt = FakePrepared(
+        kind="aave withdraw", to=pool,
+        amount_wei=10 * 10**6, amount_unit="USDC", amount_decimals=6,
+        aave_estimated_hf_after="1.50",  # safe per Aave (>1) but below our cap
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert "hf-would-drop-below-min" in d.reason
+
+
+def test_min_health_factor_none_disables_check(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        contract_allowlist=[pool],
+        # min_health_factor not set
+    ))
+    pt = FakePrepared(
+        kind="aave borrow", to=pool,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,
+        aave_estimated_hf_after="1.05",  # near-liquidation, but no min set
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_aave_repay_does_not_need_hf_check(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        contract_allowlist=[pool],
+        min_health_factor=2.0,
+    ))
+    pt = FakePrepared(
+        kind="aave repay", to=pool,
+        amount_wei=10 * 10**6, amount_unit="USDC", amount_decimals=6,
+        # repay never reduces HF — no estimated_hf_after needed
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
 # --- schema validation -------------------------------------------------------
 
 

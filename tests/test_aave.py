@@ -355,6 +355,125 @@ def test_prepare_withdraw_max_marks_in_description():
 # --- prepare_faucet_mint ----------------------------------------------------
 
 
+# --- HF estimation -----------------------------------------------------------
+
+
+def _w3_with_summary_and_price(*, collateral_base: int, debt_base: int, liq_threshold_bps: int,
+                                hf_raw: int, asset_price_base: int, asset_lt_bps: int):
+    """Build a w3 mock that returns specific values for Pool.getUserAccountData,
+    Oracle.getAssetPrice, and DataProvider.getReserveConfigurationData."""
+    w3 = MagicMock()
+
+    def contract_factory(address, abi):
+        c = MagicMock()
+        c.functions.getUserAccountData.return_value.call.return_value = [
+            collateral_base, debt_base, 0, liq_threshold_bps, 0, hf_raw,
+        ]
+        c.functions.getAssetPrice.return_value.call.return_value = asset_price_base
+        c.functions.getReserveConfigurationData.return_value.call.return_value = [
+            6, 0, asset_lt_bps, 0, 0, True, True, False, True, False,
+        ]
+        return c
+    w3.eth.contract = contract_factory
+    return w3
+
+
+def test_estimate_hf_after_borrow_dollar_math():
+    """Borrowing $50 against $300 weighted-at-75% collateral → HF = 225/50 = 4.5."""
+    from wallet.protocols.aave import AaveReserve, estimate_hf_after_borrow
+
+    chain = ChainConfig(
+        name="sepolia", chain_id=11155111,
+        rpc_url="http://invalid", explorer_api_url="http://invalid",
+        explorer_tx_url="http://invalid/{tx}", native_symbol="ETH",
+        protocols={"aave_v3": {
+            "pool": "0x" + "11" * 20, "data_provider": "0x" + "22" * 20,
+            "oracle": "0x" + "33" * 20,
+        }},
+    )
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    w3 = _w3_with_summary_and_price(
+        collateral_base=300 * 10**8,   # $300
+        debt_base=0,
+        liq_threshold_bps=7500,        # 75%
+        hf_raw=2**256 - 1,             # no debt
+        asset_price_base=1 * 10**8,    # $1 USDC
+        asset_lt_bps=8500,
+    )
+    hf = estimate_hf_after_borrow(w3, chain, USER, reserve, 50 * 10**6)
+    assert hf is not None
+    assert abs(hf - 4.5) < 0.01
+
+
+def test_estimate_hf_after_borrow_returns_none_when_zero_amount_and_no_debt():
+    from wallet.protocols.aave import AaveReserve, estimate_hf_after_borrow
+
+    chain = ChainConfig(
+        name="sepolia", chain_id=11155111,
+        rpc_url="http://invalid", explorer_api_url="http://invalid",
+        explorer_tx_url="http://invalid/{tx}", native_symbol="ETH",
+        protocols={"aave_v3": {"pool": "0x"+"11"*20, "data_provider": "0x"+"22"*20, "oracle": "0x"+"33"*20}},
+    )
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    w3 = _w3_with_summary_and_price(
+        collateral_base=0, debt_base=0, liq_threshold_bps=0,
+        hf_raw=2**256 - 1, asset_price_base=10**8, asset_lt_bps=0,
+    )
+    hf = estimate_hf_after_borrow(w3, chain, USER, reserve, 0)
+    assert hf is None  # via summary.health_factor passthrough
+
+
+def test_estimate_hf_after_withdraw_drops_with_collateral():
+    """Withdrawing $100 from $300 collateral leaves $200 weighted-at-75% = $150;
+    with $50 debt that's HF = 3.0."""
+    from wallet.protocols.aave import AaveReserve, estimate_hf_after_withdraw
+
+    chain = ChainConfig(
+        name="sepolia", chain_id=11155111,
+        rpc_url="http://invalid", explorer_api_url="http://invalid",
+        explorer_tx_url="http://invalid/{tx}", native_symbol="ETH",
+        protocols={"aave_v3": {"pool":"0x"+"11"*20,"data_provider":"0x"+"22"*20,"oracle":"0x"+"33"*20}},
+    )
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    # $300 collateral, $50 debt → current HF = 225/50 = 4.5
+    w3 = _w3_with_summary_and_price(
+        collateral_base=300 * 10**8,
+        debt_base=50 * 10**8,
+        liq_threshold_bps=7500,
+        hf_raw=int(4.5 * 10**18),
+        asset_price_base=10**8,        # $1 USDC
+        asset_lt_bps=7500,             # withdraw a 75% LT asset
+    )
+    # Withdraw $100 of asset (100 × 10^6 in 6-decimal wei)
+    hf = estimate_hf_after_withdraw(w3, chain, USER, reserve, 100 * 10**6)
+    # weighted before = 300 × 0.75 = $225
+    # delta_weighted = $100 × 0.75 = $75
+    # weighted after = $150
+    # HF = 150 / 50 = 3.0
+    assert hf is not None
+    assert abs(hf - 3.0) < 0.01
+
+
+def test_estimate_hf_after_withdraw_no_debt_returns_none():
+    from wallet.protocols.aave import AaveReserve, estimate_hf_after_withdraw
+
+    chain = ChainConfig(
+        name="sepolia", chain_id=11155111,
+        rpc_url="http://invalid", explorer_api_url="http://invalid",
+        explorer_tx_url="http://invalid/{tx}", native_symbol="ETH",
+        protocols={"aave_v3": {"pool":"0x"+"11"*20,"data_provider":"0x"+"22"*20,"oracle":"0x"+"33"*20}},
+    )
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+    w3 = _w3_with_summary_and_price(
+        collateral_base=300*10**8, debt_base=0, liq_threshold_bps=7500,
+        hf_raw=2**256-1, asset_price_base=10**8, asset_lt_bps=7500,
+    )
+    assert estimate_hf_after_withdraw(w3, chain, USER, reserve, 10*10**6) is None
+
+
 def test_prepare_faucet_mint_builds_tx():
     """Faucet uses its own contract; should produce a PreparedTx with the
     aave_faucet kind so policy / audit treat it as a distinct category."""

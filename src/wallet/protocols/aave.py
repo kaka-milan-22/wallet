@@ -103,6 +103,31 @@ AAVE_POOL_ABI = [
         ],
         "outputs": [{"name": "", "type": "uint256"}],
     },
+    {
+        "name": "borrow",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "asset", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+            {"name": "interestRateMode", "type": "uint256"},
+            {"name": "referralCode", "type": "uint16"},
+            {"name": "onBehalfOf", "type": "address"},
+        ],
+        "outputs": [],
+    },
+    {
+        "name": "repay",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "asset", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+            {"name": "interestRateMode", "type": "uint256"},
+            {"name": "onBehalfOf", "type": "address"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
 ]
 
 
@@ -124,6 +149,24 @@ AAVE_FAUCET_ABI = [
         "outputs": [{"name": "", "type": "uint256"}],
     },
 ]
+
+
+AAVE_ORACLE_ABI = [
+    {
+        "name": "getAssetPrice",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "asset", "type": "address"}],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+]
+
+
+# Interest rate mode for borrow/repay. V3 deprecated stable rate; only variable
+# (= 2) is meaningful in practice.
+AAVE_INTEREST_MODE_VARIABLE = 2
+
+REPAY_MAX_AMOUNT = 2**256 - 1  # Aave convention: type(uint256).max = "repay all"
 
 
 AAVE_DATA_PROVIDER_ABI = [
@@ -335,6 +378,81 @@ def base_to_usd(base_wei: int) -> str:
     return f"{base_wei / 10**AAVE_BASE_DECIMALS:.2f}"
 
 
+# --- price oracle + LT helpers ----------------------------------------------
+
+
+def get_asset_price(w3, chain: ChainConfig, asset_address: str) -> int:
+    """Read Aave's oracle price for an asset (returned in USD × 1e8)."""
+    oracle = w3.eth.contract(
+        address=Web3.to_checksum_address(get_protocol_address(chain, "aave_v3", "oracle")),
+        abi=AAVE_ORACLE_ABI,
+    )
+    return int(oracle.functions.getAssetPrice(Web3.to_checksum_address(asset_address)).call())
+
+
+def get_reserve_lt_bps(w3, chain: ChainConfig, asset_address: str) -> int:
+    """Per-reserve liquidation threshold in basis points (8000 = 80%)."""
+    dp = _data_provider(w3, chain)
+    cfg = dp.functions.getReserveConfigurationData(
+        Web3.to_checksum_address(asset_address)
+    ).call()
+    return int(cfg[2])  # liquidationThreshold field
+
+
+def _asset_value_base(amount_wei: int, asset_price_base: int, decimals: int) -> int:
+    """Compute the USD-base value of `amount_wei` tokens at `asset_price_base`
+    (Aave oracle, USD × 1e8). Returns base-currency wei."""
+    return amount_wei * asset_price_base // (10**decimals)
+
+
+def estimate_hf_after_borrow(
+    w3, chain: ChainConfig, user: str, reserve: AaveReserve, amount_wei: int,
+) -> float | None:
+    """Predict HF after a borrow of `amount_wei` of `reserve`.
+
+    Borrow: weighted collateral unchanged; total debt increases by
+    amount × asset_price (in USD base). HF = weighted_collateral / new_total_debt.
+    Returns None if new total debt would be zero (impossible for borrow >0).
+    """
+    summary = get_account_summary(w3, chain, user)
+    if amount_wei <= 0:
+        return summary.health_factor
+    price = get_asset_price(w3, chain, reserve.asset_address)
+    borrow_value_base = _asset_value_base(amount_wei, price, reserve.decimals)
+    new_total_debt = summary.total_debt_base_wei + borrow_value_base
+    if new_total_debt == 0:
+        return None
+    weighted_collateral = summary.total_collateral_base_wei * summary.liquidation_threshold_bps // 10_000
+    return weighted_collateral / new_total_debt
+
+
+def estimate_hf_after_withdraw(
+    w3, chain: ChainConfig, user: str, reserve: AaveReserve, amount_wei: int,
+) -> float | None:
+    """Predict HF after a withdraw of `amount_wei` of `reserve`.
+
+    Withdraw: total debt unchanged; weighted collateral decreases by
+    amount × asset_price × per_asset_LT (NOT the user's average LT, because
+    the withdrawn asset's contribution leaves at its own LT).
+    Returns None when there's no debt (HF still infinite).
+    """
+    summary = get_account_summary(w3, chain, user)
+    if summary.total_debt_base_wei == 0:
+        return None  # still infinite
+    if amount_wei <= 0:
+        return summary.health_factor
+
+    price = get_asset_price(w3, chain, reserve.asset_address)
+    withdraw_value_base = _asset_value_base(amount_wei, price, reserve.decimals)
+    asset_lt_bps = get_reserve_lt_bps(w3, chain, reserve.asset_address)
+
+    current_weighted = summary.total_collateral_base_wei * summary.liquidation_threshold_bps // 10_000
+    delta_weighted = withdraw_value_base * asset_lt_bps // 10_000
+    new_weighted = max(0, current_weighted - delta_weighted)
+
+    return new_weighted / summary.total_debt_base_wei
+
+
 # --- reserve resolution ------------------------------------------------------
 
 
@@ -525,6 +643,18 @@ def prepare_withdraw(
     fee_wei = tx["maxFeePerGas"] * tx["gas"]
 
     is_max = amount_wei == WITHDRAW_MAX_AMOUNT
+
+    # Predict post-withdraw HF (None when no debt — still infinite)
+    if is_max:
+        # We can't know the exact amount when --max; treat as no-debt safe if
+        # there's no debt; otherwise let Aave's HF<1 revert catch it.
+        hf_after = summary.health_factor
+    else:
+        try:
+            hf_after = estimate_hf_after_withdraw(w3, chain, sender_cs, reserve, amount_wei)
+        except Exception:
+            hf_after = None  # estimation failed; fall back to Aave's chain-level check
+
     return PreparedTx(
         tx=tx,
         estimated_fee_wei=fee_wei,
@@ -539,6 +669,131 @@ def prepare_withdraw(
             "aave_asset_address": reserve.asset_address,
             "aave_pool": pool_addr,
             "aave_current_hf": str(summary.health_factor) if summary.health_factor is not None else "inf",
+            "aave_estimated_hf_after": str(hf_after) if hf_after is not None else "inf",
             "aave_withdraw_max": is_max,
+        },
+    )
+
+
+def prepare_borrow(
+    w3,
+    chain: ChainConfig,
+    sender: str,
+    reserve: AaveReserve,
+    amount_wei: int,
+):
+    """Build an unsigned `Pool.borrow(asset, amount, mode=2, 0, onBehalfOf=sender)` tx.
+
+    V3 deprecated stable-rate borrows; we always use variable (mode=2). The
+    `aave_estimated_hf_after` field in the description lets the policy gate
+    enforce `min_health_factor` before signing, more conservatively than
+    Aave's own HF >= 1 chain-level check.
+    """
+    PreparedTx, _common_fields, _simulate, _, _ = _prepare_common_imports()
+
+    sender_cs = Web3.to_checksum_address(sender)
+    pool_addr = Web3.to_checksum_address(get_protocol_address(chain, "aave_v3", "pool"))
+
+    summary = get_account_summary(w3, chain, sender_cs)
+    try:
+        hf_after = estimate_hf_after_borrow(w3, chain, sender_cs, reserve, amount_wei)
+    except Exception:
+        hf_after = None
+
+    pool = w3.eth.contract(address=pool_addr, abi=AAVE_POOL_ABI)
+    base = _common_fields(w3, chain, sender)
+    tx = pool.functions.borrow(
+        Web3.to_checksum_address(reserve.asset_address),
+        amount_wei,
+        AAVE_INTEREST_MODE_VARIABLE,
+        0,                # referralCode
+        sender_cs,        # onBehalfOf
+    ).build_transaction(base)
+    _simulate(w3, tx)
+    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+
+    return PreparedTx(
+        tx=tx,
+        estimated_fee_wei=fee_wei,
+        description={
+            "kind": "aave borrow",
+            "from": tx["from"],
+            "to": pool_addr,
+            "amount_wei": amount_wei,
+            "amount_unit": reserve.symbol,
+            "amount_decimals": reserve.decimals,
+            "aave_action": "borrow",
+            "aave_asset_address": reserve.asset_address,
+            "aave_pool": pool_addr,
+            "aave_current_hf": str(summary.health_factor) if summary.health_factor is not None else "inf",
+            "aave_estimated_hf_after": str(hf_after) if hf_after is not None else "inf",
+        },
+    )
+
+
+def prepare_repay(
+    w3,
+    chain: ChainConfig,
+    sender: str,
+    reserve: AaveReserve,
+    amount_wei: int,
+):
+    """Build an unsigned `Pool.repay(asset, amount, mode=2, onBehalfOf=sender)` tx.
+
+    Pass `amount_wei = REPAY_MAX_AMOUNT` to repay the entire variable debt
+    (Aave convention). Repay only improves HF, so no policy HF check needed.
+    Requires prior `wallet approve set <token> <pool> <amount>` like supply.
+    """
+    PreparedTx, _common_fields, _simulate, allowance, InsufficientAllowance = (
+        _prepare_common_imports()
+    )
+
+    sender_cs = Web3.to_checksum_address(sender)
+    pool_addr = Web3.to_checksum_address(get_protocol_address(chain, "aave_v3", "pool"))
+
+    # Allowance check — only relevant if amount is finite; for MAX the actual
+    # transferFrom will read the user's current variable-debt balance, which
+    # we can't know exactly without an extra RPC. Aave reverts cleanly if the
+    # approval is short, so let it through and trust the on-chain check.
+    if amount_wei != REPAY_MAX_AMOUNT:
+        current = allowance(w3, reserve.asset_address, sender_cs, pool_addr)
+        if current < amount_wei:
+            raise InsufficientAllowance(
+                token_symbol=reserve.symbol,
+                token_address=reserve.asset_address,
+                spender=pool_addr,
+                current_wei=current,
+                required_wei=amount_wei,
+            )
+
+    summary = get_account_summary(w3, chain, sender_cs)
+
+    pool = w3.eth.contract(address=pool_addr, abi=AAVE_POOL_ABI)
+    base = _common_fields(w3, chain, sender)
+    tx = pool.functions.repay(
+        Web3.to_checksum_address(reserve.asset_address),
+        amount_wei,
+        AAVE_INTEREST_MODE_VARIABLE,
+        sender_cs,
+    ).build_transaction(base)
+    _simulate(w3, tx)
+    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+
+    is_max = amount_wei == REPAY_MAX_AMOUNT
+    return PreparedTx(
+        tx=tx,
+        estimated_fee_wei=fee_wei,
+        description={
+            "kind": "aave repay",
+            "from": tx["from"],
+            "to": pool_addr,
+            "amount_wei": amount_wei,
+            "amount_unit": reserve.symbol,
+            "amount_decimals": reserve.decimals,
+            "aave_action": "repay",
+            "aave_asset_address": reserve.asset_address,
+            "aave_pool": pool_addr,
+            "aave_current_hf": str(summary.health_factor) if summary.health_factor is not None else "inf",
+            "aave_repay_max": is_max,
         },
     )

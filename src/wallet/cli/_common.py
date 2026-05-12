@@ -67,6 +67,10 @@ def _category(prepared: PreparedTx) -> str:
         return "aave_withdraw"
     if kind == "aave faucet":
         return "aave_faucet"
+    if kind == "aave borrow":
+        return "aave_borrow"
+    if kind == "aave repay":
+        return "aave_repay"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -86,6 +90,10 @@ def _kind_machine(prepared: PreparedTx) -> str:
         return "aave_withdraw"
     if kind_raw == "aave faucet":
         return "aave_faucet"
+    if kind_raw == "aave borrow":
+        return "aave_borrow"
+    if kind_raw == "aave repay":
+        return "aave_repay"
     if kind_raw == "native transfer":
         return "native_transfer"
     if "approve" in kind_raw:
@@ -139,7 +147,8 @@ def _build_data(
     # Aave-specific fields (only present for aave_supply / aave_withdraw)
     for key in (
         "aave_action", "aave_asset_address", "aave_pool",
-        "aave_current_hf", "aave_withdraw_max", "aave_faucet",
+        "aave_current_hf", "aave_estimated_hf_after",
+        "aave_withdraw_max", "aave_repay_max", "aave_faucet",
     ):
         if key in desc:
             payload[key] = desc[key]
@@ -204,21 +213,27 @@ def _render_preview(state: WalletState, chain: ChainConfig):
             )
 
         # Aave-specific preview rows
-        if d.get("kind") in ("aave_supply", "aave_withdraw"):
-            hf = d.get("aave_current_hf", "?")
-            try:
-                hf_num = float(hf)
-                if hf_num < 1.1:
-                    hf_display = f"[red]{hf_num:.3f}[/red]"
-                elif hf_num < 1.5:
-                    hf_display = f"[yellow]{hf_num:.3f}[/yellow]"
-                else:
-                    hf_display = f"[green]{hf_num:.3f}[/green]"
-            except (ValueError, TypeError):
-                hf_display = "[green]∞ (no debt)[/green]" if hf == "inf" else str(hf)
-            table.add_row("current HF", hf_display)
+        if d.get("kind") in ("aave_supply", "aave_withdraw", "aave_borrow", "aave_repay"):
+            def _hf_display(hf_str):
+                try:
+                    n = float(hf_str)
+                    if n < 1.1:
+                        return f"[red]{n:.3f}[/red]"
+                    if n < 1.5:
+                        return f"[yellow]{n:.3f}[/yellow]"
+                    return f"[green]{n:.3f}[/green]"
+                except (ValueError, TypeError):
+                    return "[green]∞ (no debt)[/green]" if hf_str == "inf" else str(hf_str)
+
+            table.add_row("current HF", _hf_display(d.get("aave_current_hf", "?")))
+            # Show estimated HF after for ops that reduce HF (borrow/withdraw)
+            if d.get("kind") in ("aave_borrow", "aave_withdraw") and "aave_estimated_hf_after" in d:
+                table.add_row("estimated HF after", _hf_display(d["aave_estimated_hf_after"]))
+                table.add_row("liquidation HF", "[dim]1.000 (Aave revert threshold)[/dim]")
             if d.get("aave_withdraw_max"):
                 table.add_row("withdraw mode", "[bold]max (full aToken balance)[/bold]")
+            if d.get("aave_repay_max"):
+                table.add_row("repay mode", "[bold]max (full variable debt)[/bold]")
 
         table.add_row("nonce", str(d.get("nonce")))
         table.add_row("gas limit", str(d.get("gas")))
