@@ -46,7 +46,8 @@ export WALLET_JSON=1
 Then invoke read commands and parse with jq:
 
 ```sh
-wallet balance --token USDC | jq -r '.data.balances[0].amount'
+wallet balance --token USDC  | jq -r '.data.balances[0].amount'
+wallet portfolio             | jq '.data.accounts[0].balances'
 wallet account list          | jq -r '.data.accounts[].name'
 wallet account show <name>   | jq -r '.data.signed'        # true / false
 wallet history -n 20         | jq '.data.transactions[] | {dir:.direction, hash}'
@@ -55,6 +56,12 @@ wallet book list             | jq '.data.entries'
 wallet watch list            | jq '.data.entries'
 wallet policy show           | jq '.data.policy'
 wallet info                  | jq .
+
+# Aave V3 read-only (Phase 2 PR3)
+wallet aave positions        | jq '.data.summary'                                   # totals + HF
+wallet aave positions        | jq '.data.supplies[] | {symbol, amount}'             # per-asset
+wallet aave rates            | jq '.data.rates[] | {symbol, supply: .supply_apr_pct, borrow: .variable_borrow_apr_pct}'
+wallet aave rates --token USDC | jq '.data.rates[0]'
 ```
 
 ## Sending ETH or ERC-20 (signing — needs user OK + policy compliance)
