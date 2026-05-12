@@ -44,6 +44,11 @@ _BUILTIN_PRESETS: dict[str, dict] = {
                 "quoter_v2": "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3",
                 "factory": "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
             },
+            "aave_v3": {
+                "pool": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
+                "data_provider": "0x3e9708d80f7B3e43118013075F7e95CE3AB31F31",
+                "addresses_provider": "0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A",
+            },
         },
     },
 }

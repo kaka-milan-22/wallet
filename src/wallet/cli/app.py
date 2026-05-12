@@ -3,6 +3,7 @@ from __future__ import annotations
 import typer
 
 from wallet import __version__
+from wallet.cli import aave as aave_cli
 from wallet.cli import account as account_cli
 from wallet.cli import approve as approve_cli
 from wallet.cli import book as book_cli
@@ -27,6 +28,7 @@ app.add_typer(book_cli.app, name="book")
 app.add_typer(watch_cli.app, name="watch")
 app.add_typer(token_cli.app, name="token")
 app.add_typer(policy_cli.app, name="policy")
+app.add_typer(aave_cli.app, name="aave")
 app.command("balance")(balance_cmd)
 app.command("portfolio")(portfolio_cmd)
 app.command("send")(send_cmd)

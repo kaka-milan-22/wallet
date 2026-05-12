@@ -106,6 +106,13 @@ uv run wallet swap ETH USDC 0.001 --via 0x                 # force aggregator (w
 # Router addresses (Uniswap V3 router; 0x AllowanceHolder) must be in policy.contract_allowlist
 # ERC-20 input requires prior `wallet approve set <token> <router> <amount>`
 
+# Aave V3 — read-only views (Phase 2 PR3)
+uv run wallet aave positions                # your supplies / borrows + health factor
+uv run wallet aave positions --account second
+uv run wallet aave rates                    # current supply / variable-borrow APRs for every reserve
+uv run wallet aave rates --token USDC       # filter to one symbol
+uv run wallet --json aave positions | jq '.data.summary.health_factor'
+
 # History
 uv run wallet history                       # default account, native + contract calls
 uv run wallet history --tokens              # ERC-20 transfers
