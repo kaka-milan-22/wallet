@@ -6,6 +6,8 @@ from rich.table import Table
 from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, make_web3
+from web3.exceptions import ContractLogicError as _ContractLogicError
+
 from wallet.cli._common import confirm_and_broadcast
 from wallet.core.rpc import parse_units
 from wallet.protocols.aave import (
@@ -25,6 +27,56 @@ from wallet.protocols.swap import InsufficientAllowance
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="Aave V3 read-only views (positions, rates)")
+
+
+# Aave V3 numeric error code → human-readable hint. Subset; only codes likely
+# to surface on testnet. Source: aave-v3-core/.../helpers/Errors.sol.
+_AAVE_ERROR_CODES = {
+    "26": "INVALID_AMOUNT — amount must be > 0",
+    "27": "RESERVE_INACTIVE",
+    "28": "RESERVE_FROZEN — Aave admins disabled new supplies",
+    "29": "RESERVE_PAUSED",
+    "30": "BORROWING_NOT_ENABLED for this asset",
+    "31": "NOT_ENOUGH_AVAILABLE_USER_BALANCE",
+    "32": "INVALID_INTEREST_RATE_MODE_SELECTED",
+    "33": "COLLATERAL_BALANCE_IS_ZERO — supply collateral first",
+    "34": "HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD — borrow/withdraw would liquidate",
+    "35": "COLLATERAL_CANNOT_COVER_NEW_BORROW",
+    "36": "COLLATERAL_SAME_AS_BORROWING_CURRENCY",
+    "43": "NO_DEBT_OF_SELECTED_TYPE",
+    "44": "NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF",
+    "50": "BORROW_CAP_EXCEEDED — Aave's borrow cap for this asset is full",
+    "51": "SUPPLY_CAP_EXCEEDED — Aave's supply cap is full (common on testnets). Try a smaller amount or a different reserve.",
+    "55": "DEBT_CEILING_EXCEEDED",
+    "62": "USER_IN_ISOLATION_MODE_OR_LTV_ZERO",
+}
+
+
+def _format_revert(exc) -> str:
+    """Extract a clean revert message; map Aave numeric codes to descriptions."""
+    msg = str(exc)
+    if ":" in msg:
+        # ContractLogicError str looks like "('execution reverted: 51', '0x...')"
+        # or "execution reverted: 51"
+        for prefix in ("execution reverted:", "reverted:"):
+            if prefix in msg:
+                code = msg.split(prefix, 1)[1].strip().split("'")[0].strip()
+                if code in _AAVE_ERROR_CODES:
+                    return f"aave:{code} ({_AAVE_ERROR_CODES[code]})"
+                return f"reverted with: {code}"
+    return msg
+
+
+def _aave_error_hint(msg: str) -> dict:
+    """Pull the aave error code out of a ContractLogicError str for the JSON envelope."""
+    for prefix in ("execution reverted:", "reverted:"):
+        if prefix in msg:
+            code = msg.split(prefix, 1)[1].strip().split("'")[0].strip()
+            return {
+                "aave_error_code": code,
+                "aave_error_meaning": _AAVE_ERROR_CODES.get(code, "(unmapped)"),
+            }
+    return {"aave_error_code": None}
 
 
 def _resolve_account(state, account: str | None) -> tuple[str, str]:
@@ -283,6 +335,14 @@ def supply(
             },
         )
         raise typer.Exit(code=2)
+    except _ContractLogicError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.supply", chain=cfg.name,
+            reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
@@ -351,7 +411,16 @@ def withdraw(
             _emit_err("validation_error", command="aave.withdraw", chain=cfg.name, reason=str(e))
             raise typer.Exit(code=2)
 
-    prepared = prepare_withdraw(w3, cfg, sender.address, reserve, amount_wei)
+    try:
+        prepared = prepare_withdraw(w3, cfg, sender.address, reserve, amount_wei)
+    except _ContractLogicError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.withdraw", chain=cfg.name,
+            reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
@@ -411,7 +480,16 @@ def faucet(
         _emit_err("validation_error", command="aave.faucet", chain=cfg.name, reason=str(e))
         raise typer.Exit(code=2)
 
-    prepared = prepare_faucet_mint(w3, cfg, sender.address, reserve, amount_wei)
+    try:
+        prepared = prepare_faucet_mint(w3, cfg, sender.address, reserve, amount_wei)
+    except _ContractLogicError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.faucet", chain=cfg.name,
+            reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
