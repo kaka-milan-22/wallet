@@ -96,11 +96,14 @@ uv run wallet approve set USDC <spender> --unlimited --broadcast
 uv run wallet approve show USDC --spender <spender>
 uv run wallet approve revoke USDC <spender> --broadcast
 
-# Swap (single-hop Uniswap V3 — Phase 2)
-uv run wallet swap ETH USDC 0.001                          # dry-run preview
-uv run wallet swap USDC WETH 100 --slippage-bps 50         # dry-run, 0.5% slip
-uv run wallet swap ETH USDC 0.001 --broadcast --yes        # real broadcast (TTY)
-# Requires Uniswap V3 SwapRouter02 in policy.contract_allowlist
+# Swap — default `--via auto` tries 0x aggregator, falls back to direct Uniswap V3
+uv run wallet swap ETH USDC 0.001                          # dry-run preview, auto route
+uv run wallet swap USDC WETH 100 --slippage-bps 50         # 0.5% slippage
+uv run wallet swap ETH USDC 0.001 --broadcast --yes        # real broadcast
+uv run wallet swap ETH USDC 0.001 --via uniswap-v3         # force direct UniV3 (skip 0x)
+uv run wallet swap ETH USDC 0.001 --via 0x                 # force aggregator (will fail without API key)
+# 0x aggregator needs WALLET_ZEROX_API_KEY (free at dashboard.0x.org)
+# Router addresses (Uniswap V3 router; 0x AllowanceHolder) must be in policy.contract_allowlist
 # ERC-20 input requires prior `wallet approve set <token> <router> <amount>`
 
 # History

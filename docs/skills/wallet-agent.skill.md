@@ -112,17 +112,33 @@ own terminal** (in Claude Code, `! <command>` drops to the shell).
 
 ## Swapping tokens (Phase 2)
 
-Single-hop Uniswap V3 swap via `wallet swap`:
+`wallet swap` with the default `--via auto` first asks the 0x aggregator for
+the best route; if 0x has no API key or no route, it falls back to a direct
+Uniswap V3 single-hop swap.
 
 ```sh
-# Dry-run preview — shows route + expected_out + min_out (after slippage)
+# Dry-run preview — shows route provider + expected_out + min_out (after slippage)
 wallet swap ETH USDC 0.001 --slippage-bps 50 \
-  | jq '{route:.data.swap_route, expected:.data.swap_amount_out_expected, min:.data.swap_amount_out_min}'
+  | jq '{provider:.data.swap_provider, route:.data.swap_route,
+         expected:.data.swap_amount_out_expected, min:.data.swap_amount_out_min}'
 
 # Real broadcast — needs fresh --request-id and --yes
 wallet swap ETH USDC 0.001 --broadcast --yes --request-id "$(uuidgen)" \
   | jq -r '.data.tx_hash'
+
+# Pin the provider explicitly when needed
+wallet swap ETH USDC 0.001 --via 0x        # aggregator only (errors if no API key)
+wallet swap ETH USDC 0.001 --via uniswap-v3  # skip aggregator entirely
 ```
+
+Notes on `--via auto`:
+
+- 0x aggregator pricing usually wins on mainnet for liquid pairs (Uniswap V2/V3,
+  Curve, Balancer, etc. all routed through one quote).
+- On Sepolia (or any chain with thin aggregator liquidity), 0x often returns
+  no-route and the wallet quietly degrades to direct Uniswap V3.
+- The `swap_provider` field in the JSON envelope tells you which path was
+  actually used — `"0x"` or `"uniswap_v3"`.
 
 **Native ETH** input doesn't need `approve` (router wraps via msg.value).
 **ERC-20** input requires prior `wallet approve set <token> <router> <amount>`.

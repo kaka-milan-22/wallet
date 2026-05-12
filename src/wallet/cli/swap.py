@@ -7,8 +7,10 @@ from wallet.cli._output import emit_error
 from wallet.core.config import get_chain
 from wallet.core.rpc import make_web3, parse_units
 from wallet.core.tokens import TokenInfo, resolve_token
+from wallet.protocols.routes.auto import AutoFallbackRoute
 from wallet.protocols.routes.base import NoRouteError
 from wallet.protocols.routes.uniswap_v3 import UniswapV3DirectRoute
+from wallet.protocols.routes.zerox import ZeroExRoute
 from wallet.protocols.swap import InsufficientAllowance, prepare_swap
 from wallet.storage.state import load_state
 
@@ -35,7 +37,13 @@ def _build_provider(name: str):
     n = name.lower()
     if n in ("uniswap-v3", "uniswap_v3"):
         return UniswapV3DirectRoute()
-    raise ValueError(f"unknown route provider: {name!r} (supported: uniswap-v3)")
+    if n == "0x":
+        return ZeroExRoute()
+    if n == "auto":
+        # 0x aggregator first (best mainnet price); UniV3 direct as fallback
+        # for thin liquidity (e.g. Sepolia) or when WALLET_ZEROX_API_KEY isn't set.
+        return AutoFallbackRoute([ZeroExRoute(), UniswapV3DirectRoute()])
+    raise ValueError(f"unknown route provider: {name!r} (supported: auto / 0x / uniswap-v3)")
 
 
 def swap(
@@ -43,7 +51,7 @@ def swap(
     token_out: str = typer.Argument(..., help="Output token symbol or 0x address"),
     amount: str = typer.Argument(..., help="Input amount in human units"),
     slippage_bps: int = typer.Option(50, "--slippage-bps", help="Slippage tolerance in basis points (50 = 0.5%)"),
-    via: str = typer.Option("uniswap-v3", "--via", help="Route provider: uniswap-v3 (more providers in future PRs)"),
+    via: str = typer.Option("auto", "--via", help="Route provider: auto (0x → uniswap-v3 fallback) / 0x / uniswap-v3"),
     account: str | None = typer.Option(None, "--account", "-a"),
     chain: str | None = typer.Option(None, "--chain"),
     broadcast: bool = typer.Option(False, "--broadcast/--dry-run", help="Default is dry-run; pass --broadcast to submit"),
