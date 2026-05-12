@@ -350,3 +350,50 @@ def test_prepare_withdraw_max_marks_in_description():
 
     assert pt.description["aave_withdraw_max"] is True
     assert pt.description["amount_wei"] == WITHDRAW_MAX_AMOUNT
+
+
+# --- prepare_faucet_mint ----------------------------------------------------
+
+
+def test_prepare_faucet_mint_builds_tx():
+    """Faucet uses its own contract; should produce a PreparedTx with the
+    aave_faucet kind so policy / audit treat it as a distinct category."""
+    from wallet.protocols.aave import AaveReserve, prepare_faucet_mint
+
+    chain = ChainConfig(
+        name="sepolia", chain_id=11155111,
+        rpc_url="http://invalid", explorer_api_url="http://invalid",
+        explorer_tx_url="http://invalid/{tx}", native_symbol="ETH",
+        protocols={
+            "aave_v3": {
+                "pool": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
+                "data_provider": "0x3e9708d80f7B3e43118013075F7e95CE3AB31F31",
+                "faucet": "0xC959483DBa39aa9E78757139af0e9a2EDEb3f42D",
+            },
+        },
+    )
+
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    from web3 import Web3
+    w3 = MagicMock()
+    w3.eth.max_priority_fee = Web3.to_wei(2, "gwei")
+    w3.eth.get_block.return_value = {"baseFeePerGas": Web3.to_wei(10, "gwei")}
+    w3.eth.get_transaction_count.return_value = 5
+    w3.eth.call.return_value = b""
+
+    def contract_factory(address, abi):
+        c = MagicMock()
+        c.functions.mint.return_value.build_transaction = lambda base: {
+            **base, "to": address, "data": "0xmint", "value": 0, "gas": 80_000,
+        }
+        return c
+    w3.eth.contract = contract_factory
+
+    pt = prepare_faucet_mint(w3, chain, USER, reserve, 100 * 10**6)
+
+    assert pt.description["kind"] == "aave faucet"
+    assert pt.description["aave_action"] == "faucet"
+    assert pt.description["aave_faucet"] == "0xC959483DBa39aa9E78757139af0e9a2EDEb3f42D"
+    assert pt.description["amount_unit"] == "USDC"
+    assert pt.tx["to"] == "0xC959483DBa39aa9E78757139af0e9a2EDEb3f42D"

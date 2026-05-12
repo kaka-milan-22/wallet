@@ -65,6 +65,8 @@ def _category(prepared: PreparedTx) -> str:
         return "aave_supply"
     if kind == "aave withdraw":
         return "aave_withdraw"
+    if kind == "aave faucet":
+        return "aave_faucet"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -82,6 +84,8 @@ def _kind_machine(prepared: PreparedTx) -> str:
         return "aave_supply"
     if kind_raw == "aave withdraw":
         return "aave_withdraw"
+    if kind_raw == "aave faucet":
+        return "aave_faucet"
     if kind_raw == "native transfer":
         return "native_transfer"
     if "approve" in kind_raw:
@@ -135,7 +139,7 @@ def _build_data(
     # Aave-specific fields (only present for aave_supply / aave_withdraw)
     for key in (
         "aave_action", "aave_asset_address", "aave_pool",
-        "aave_current_hf", "aave_withdraw_max",
+        "aave_current_hf", "aave_withdraw_max", "aave_faucet",
     ):
         if key in desc:
             payload[key] = desc[key]

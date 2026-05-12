@@ -390,6 +390,32 @@ def test_aave_supply_per_tx_cap_applies_to_asset(isolated_files):
     assert "max-per-tx-exceeded:USDC:5" in d.reason
 
 
+def test_aave_faucet_blocked_when_not_in_contract_allowlist(isolated_files):
+    faucet = "0x" + "cc" * 20
+    save_policy(Policy(contract_allowlist=[]))
+    pt = FakePrepared(
+        kind="aave faucet", to=faucet,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason == "aave-faucet-not-in-contract-allowlist"
+
+
+def test_aave_faucet_allowed_when_in_contract_allowlist(isolated_files):
+    faucet = "0x" + "cc" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "1000"},
+        contract_allowlist=[faucet],
+    ))
+    pt = FakePrepared(
+        kind="aave faucet", to=faucet,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
 # --- schema validation -------------------------------------------------------
 
 

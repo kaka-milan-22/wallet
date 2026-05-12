@@ -109,6 +109,23 @@ AAVE_POOL_ABI = [
 WITHDRAW_MAX_AMOUNT = 2**256 - 1  # Aave convention: type(uint256).max = "withdraw all"
 
 
+# Aave testnet faucet — public `mint(token, to, amount)` that mints mock test
+# tokens. Bound here to keep the testnet-only operation visible.
+AAVE_FAUCET_ABI = [
+    {
+        "name": "mint",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "token", "type": "address"},
+            {"name": "to", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+]
+
+
 AAVE_DATA_PROVIDER_ABI = [
     {
         "name": "getAllReservesTokens",
@@ -418,6 +435,58 @@ def prepare_supply(
             "aave_asset_address": reserve.asset_address,
             "aave_pool": pool_addr,
             "aave_current_hf": str(summary.health_factor) if summary.health_factor is not None else "inf",
+        },
+    )
+
+
+def prepare_faucet_mint(
+    w3,
+    chain: ChainConfig,
+    sender: str,
+    reserve: AaveReserve,
+    amount_wei: int,
+):
+    """Build an unsigned call to Aave's testnet faucet `mint(asset, to, amount)`.
+
+    Aave Sepolia (and other testnets) ships a permissionless faucet contract
+    that mints the mock reserve tokens. Browser-only — until now, the only
+    way to claim was through staging.aave.com which needs MetaMask. This
+    routes the same call through the CLI's policy / idempotency / audit
+    pipeline like any other write op.
+
+    Mainnet has no equivalent — calling this on a non-testnet chain will
+    fail because the faucet address isn't configured.
+    """
+    PreparedTx, _common_fields, _simulate, _, _ = _prepare_common_imports()
+
+    sender_cs = Web3.to_checksum_address(sender)
+    faucet_addr = Web3.to_checksum_address(
+        get_protocol_address(chain, "aave_v3", "faucet")
+    )
+
+    faucet = w3.eth.contract(address=faucet_addr, abi=AAVE_FAUCET_ABI)
+    base = _common_fields(w3, chain, sender)
+    tx = faucet.functions.mint(
+        Web3.to_checksum_address(reserve.asset_address),
+        sender_cs,
+        amount_wei,
+    ).build_transaction(base)
+    _simulate(w3, tx)
+    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+
+    return PreparedTx(
+        tx=tx,
+        estimated_fee_wei=fee_wei,
+        description={
+            "kind": "aave faucet",
+            "from": tx["from"],
+            "to": faucet_addr,
+            "amount_wei": amount_wei,
+            "amount_unit": reserve.symbol,
+            "amount_decimals": reserve.decimals,
+            "aave_action": "faucet",
+            "aave_asset_address": reserve.asset_address,
+            "aave_faucet": faucet_addr,
         },
     )
 

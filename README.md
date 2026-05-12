@@ -113,10 +113,12 @@ uv run wallet aave rates                    # current supply / variable-borrow A
 uv run wallet aave rates --token USDC       # filter to one symbol
 uv run wallet --json aave positions | jq '.data.summary.health_factor'
 
-# Aave V3 — supply / withdraw (Phase 2 PR4)
-# Note: Aave's testnet uses its own mock tokens — get them via the Aave faucet
-#       (https://staging.aave.com/faucet/), NOT the same as wallet builtin USDC.
-# Sepolia Pool 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951 must be in policy.contract_allowlist.
+# Aave V3 — supply / withdraw + on-chain faucet (Phase 2 PR4)
+# Aave's testnet uses its own mock tokens. To claim them without a browser
+# (skip staging.aave.com), the faucet contract is callable directly:
+uv run wallet aave faucet USDC 1000                            # dry-run
+uv run wallet aave faucet USDC 1000 --broadcast --yes          # mint 1000 mock USDC to your address
+# Sepolia Pool 0x6Ae43...8951 and Faucet 0xC959...3f42D must both be in policy.contract_allowlist.
 uv run wallet aave supply USDC 10                              # dry-run
 uv run wallet approve set USDC 0x6Ae43...8951 10 --broadcast   # one-time approve to Aave Pool
 uv run wallet aave supply USDC 10 --broadcast --yes            # supply 10 Aave-USDC

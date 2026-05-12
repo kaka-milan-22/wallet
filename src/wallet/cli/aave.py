@@ -15,6 +15,7 @@ from wallet.protocols.aave import (
     get_all_rates,
     get_all_reserves,
     get_user_positions,
+    prepare_faucet_mint,
     prepare_supply,
     prepare_withdraw,
     ray_to_pct,
@@ -351,6 +352,66 @@ def withdraw(
             raise typer.Exit(code=2)
 
     prepared = prepare_withdraw(w3, cfg, sender.address, reserve, amount_wei)
+
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes,
+        policy_bypass=policy_bypass, request_id=request_id,
+    )
+
+
+@app.command("faucet")
+def faucet(
+    token: str = typer.Argument(..., help="Aave reserve symbol or 0x address"),
+    amount: str = typer.Argument(..., help="Amount to mint (human units)"),
+    account: str | None = typer.Option(None, "--account", "-a"),
+    chain: str | None = typer.Option(None, "--chain"),
+    broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+) -> None:
+    """Mint Aave testnet mock tokens via the public faucet contract.
+
+    Replaces the browser flow at staging.aave.com/faucet/ — the same on-chain
+    call, routed through the CLI's policy / idempotency / audit pipeline.
+    Mainnet has no faucet; this will fail on chains without a `faucet` entry
+    in their `aave_v3` protocol config.
+    """
+    from wallet.cli._output import emit_error as _emit_err
+    from wallet.core.config import get_chain
+    from wallet.core.rpc import make_web3
+
+    state = load_state()
+    cfg = get_chain(chain or state.default_chain)
+    w3 = make_web3(cfg)
+
+    if account:
+        sender = state.find_account(account)
+        if not sender:
+            _emit_err("validation_error", command="aave.faucet", chain=cfg.name,
+                      reason=f"unknown account: {account}")
+            raise typer.Exit(code=2)
+    else:
+        sender = state.get_default_account()
+        if not sender:
+            _emit_err("validation_error", command="aave.faucet", chain=cfg.name,
+                      reason="no default account; pass --account")
+            raise typer.Exit(code=2)
+
+    try:
+        reserve = resolve_aave_reserve(w3, cfg, token)
+    except ValueError as e:
+        _emit_err("not_found", command="aave.faucet", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        amount_wei = parse_units(amount, reserve.decimals)
+    except ValueError as e:
+        _emit_err("validation_error", command="aave.faucet", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    prepared = prepare_faucet_mint(w3, cfg, sender.address, reserve, amount_wei)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,

@@ -102,6 +102,8 @@ def _category(prepared) -> str:
         return "aave_supply"
     if kind == "aave withdraw":
         return "aave_withdraw"
+    if kind == "aave faucet":
+        return "aave_faucet"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -280,6 +282,17 @@ def evaluate(
             return Decision(
                 allowed=False,
                 reason="aave-pool-not-in-contract-allowlist",
+                severity="block",
+            )
+
+    # --- 3d. aave faucet: faucet contract must be in contract_allowlist ---
+    if category == "aave_faucet":
+        faucet = desc.get("to")
+        contracts = {a.lower() for a in policy.contract_allowlist}
+        if faucet and faucet.lower() not in contracts:
+            return Decision(
+                allowed=False,
+                reason="aave-faucet-not-in-contract-allowlist",
                 severity="block",
             )
 

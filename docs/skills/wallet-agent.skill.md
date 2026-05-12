@@ -63,7 +63,8 @@ wallet aave positions        | jq '.data.supplies[] | {symbol, amount}'         
 wallet aave rates            | jq '.data.rates[] | {symbol, supply: .supply_apr_pct, borrow: .variable_borrow_apr_pct}'
 wallet aave rates --token USDC | jq '.data.rates[0]'
 
-# Aave V3 supply / withdraw (Phase 2 PR4) — writes, needs --broadcast + --request-id
+# Aave V3 supply / withdraw / faucet (Phase 2 PR4) — writes, need --broadcast + --request-id
+wallet aave faucet USDC 1000 --broadcast --yes --request-id "$(uuidgen)"  # claim mock tokens (testnet only)
 wallet aave supply USDC 10                                                # dry-run preview, shows current HF
 wallet aave supply USDC 10 --broadcast --yes --request-id "$(uuidgen)"    # real supply
 wallet aave withdraw USDC 5 --broadcast --yes --request-id "$(uuidgen)"   # partial withdraw

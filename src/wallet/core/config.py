@@ -48,6 +48,7 @@ _BUILTIN_PRESETS: dict[str, dict] = {
                 "pool": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
                 "data_provider": "0x3e9708d80f7B3e43118013075F7e95CE3AB31F31",
                 "addresses_provider": "0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A",
+                "faucet": "0xC959483DBa39aa9E78757139af0e9a2EDEb3f42D",
             },
         },
     },
