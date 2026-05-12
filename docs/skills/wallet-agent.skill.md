@@ -110,6 +110,33 @@ invoke them under any circumstances**:
 If the user wants any of these done, **tell them to run the command in their
 own terminal** (in Claude Code, `! <command>` drops to the shell).
 
+## Swapping tokens (Phase 2)
+
+Single-hop Uniswap V3 swap via `wallet swap`:
+
+```sh
+# Dry-run preview — shows route + expected_out + min_out (after slippage)
+wallet swap ETH USDC 0.001 --slippage-bps 50 \
+  | jq '{route:.data.swap_route, expected:.data.swap_amount_out_expected, min:.data.swap_amount_out_min}'
+
+# Real broadcast — needs fresh --request-id and --yes
+wallet swap ETH USDC 0.001 --broadcast --yes --request-id "$(uuidgen)" \
+  | jq -r '.data.tx_hash'
+```
+
+**Native ETH** input doesn't need `approve` (router wraps via msg.value).
+**ERC-20** input requires prior `wallet approve set <token> <router> <amount>`.
+
+If you get `error: insufficient_allowance`, the envelope's `data` includes
+a `suggested_command` field — just run that, then retry the swap with the
+same logical params (use a NEW request-id for the approve, then ANOTHER
+new request-id for the swap).
+
+The swap **router** (e.g. `0x3bFA...` for Uniswap V3 on Sepolia) must be in
+`policy.contract_allowlist`. If you get
+`error: policy_block, code: swap-router-not-in-contract-allowlist`, the user
+needs to add it in their terminal — you cannot modify the policy file.
+
 ## When the wallet rejects you
 
 Common policy errors and how to react:
@@ -122,6 +149,9 @@ Common policy errors and how to react:
 | `max-per-day-exceeded:ETH:X` | Today's outflow + this tx exceeds daily cap | Wait until tomorrow or raise cap in TTY |
 | `unlimited-approve-denied` | Tried `--unlimited` approve | Use a finite approval amount instead |
 | `spender-not-in-contract-allowlist` | approve target contract not allowed | Ask user to add the contract to policy |
+| `swap-router-not-in-contract-allowlist` | swap router (e.g. Uniswap V3) not allowed | Ask user to add the router address to `contract_allowlist` |
+| `no_route` | No DEX pool has liquidity for this pair/amount | Try a smaller amount; try a different output token; on Sepolia liquidity is thin |
+| `insufficient_allowance` | ERC-20 not approved for the swap router yet | Run the `suggested_command` from envelope.data, then retry |
 | `first-send-blocked-for-agent` | Recipient never seen before | Ask user to confirm the address and add to book or watch |
 | `missing-request-id-for-agent` | You forgot `--request-id` | Generate a fresh uuid and retry |
 | `idempotency-mismatch` | You reused a request-id for different params | Generate a fresh uuid; never reuse |

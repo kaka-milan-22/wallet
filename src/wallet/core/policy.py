@@ -94,8 +94,10 @@ def default_policy() -> Policy:
 
 
 def _category(prepared) -> str:
-    """Classify the prepared tx into 'send' / 'approve' / 'unknown'."""
+    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'unknown'."""
     kind = prepared.description.get("kind", "")
+    if kind == "swap":
+        return "swap"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -252,6 +254,17 @@ def evaluate(
             return Decision(
                 allowed=False,
                 reason="recipient-not-in-allowlist",
+                severity="block",
+            )
+
+    # --- 3b. swap-specific: router must be in contract_allowlist ---
+    if category == "swap":
+        router = desc.get("to")
+        contracts = {a.lower() for a in policy.contract_allowlist}
+        if router and router.lower() not in contracts:
+            return Decision(
+                allowed=False,
+                reason="swap-router-not-in-contract-allowlist",
                 severity="block",
             )
 

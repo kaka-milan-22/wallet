@@ -283,6 +283,54 @@ def test_known_recipient_via_book_no_first_send_warn(isolated_files):
     assert d.severity == "allow"
 
 
+# --- swap category -----------------------------------------------------------
+
+
+def test_swap_blocked_when_router_not_in_contract_allowlist(isolated_files):
+    router = "0x" + "33" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "1000"},
+        contract_allowlist=[],  # router NOT here
+    ))
+    pt = FakePrepared(
+        kind="swap", to=router,
+        amount_wei=10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason == "swap-router-not-in-contract-allowlist"
+
+
+def test_swap_allowed_when_router_in_contract_allowlist(isolated_files):
+    router = "0x" + "33" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "1000"},
+        contract_allowlist=[router],
+    ))
+    pt = FakePrepared(
+        kind="swap", to=router,
+        amount_wei=10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_swap_per_tx_cap_applies_to_token_in(isolated_files):
+    router = "0x" + "33" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "10"},  # cap of 10 USDC
+        contract_allowlist=[router],
+    ))
+    pt = FakePrepared(
+        kind="swap", to=router,
+        amount_wei=100 * 10**6,  # 100 USDC, way over cap
+        amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert "max-per-tx-exceeded:USDC:10" in d.reason
+
+
 # --- schema validation -------------------------------------------------------
 
 

@@ -13,6 +13,7 @@ from wallet.cli._output import OutputMode, emit, stdout_console
 from wallet.cli.balance import balance as balance_cmd
 from wallet.cli.history import history as history_cmd
 from wallet.cli.send import send as send_cmd
+from wallet.cli.swap import swap as swap_cmd
 
 app = typer.Typer(
     help="DeFi CLI wallet — Phase 1 (account / transfer / approve / history).",
@@ -27,6 +28,7 @@ app.add_typer(token_cli.app, name="token")
 app.add_typer(policy_cli.app, name="policy")
 app.command("balance")(balance_cmd)
 app.command("send")(send_cmd)
+app.command("swap")(swap_cmd)
 app.command("history")(history_cmd)
 
 

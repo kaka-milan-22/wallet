@@ -59,6 +59,8 @@ def _label_for(state: WalletState, address: str) -> str:
 def _category(prepared: PreparedTx) -> str:
     """Classify into the high-level command name used in audit + JSON envelope."""
     kind = prepared.description.get("kind", "")
+    if kind == "swap":
+        return "swap"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -67,9 +69,11 @@ def _category(prepared: PreparedTx) -> str:
 
 
 def _kind_machine(prepared: PreparedTx) -> str:
-    """Stable machine-readable kind: native_transfer / erc20_transfer / erc20_approve."""
+    """Stable machine-readable kind: native_transfer / erc20_transfer / erc20_approve / swap."""
     desc = prepared.description
     kind_raw = desc.get("kind", "")
+    if kind_raw == "swap":
+        return "swap"
     if kind_raw == "native transfer":
         return "native_transfer"
     if "approve" in kind_raw:
@@ -112,6 +116,22 @@ def _build_data(
         payload["spender"] = desc["spender"]
     if "token_address" in desc:
         payload["token_address"] = desc["token_address"]
+    # Swap-specific fields (only present for swap kind)
+    for key in (
+        "swap_token_in_address", "swap_token_out_address",
+        "swap_token_out_symbol", "swap_token_out_decimals",
+        "swap_slippage_bps", "swap_route", "swap_provider",
+    ):
+        if key in desc:
+            payload[key] = desc[key]
+    if "swap_amount_out_expected_wei" in desc:
+        out_dec = int(desc.get("swap_token_out_decimals", 18))
+        payload["swap_amount_out_expected_wei"] = str(desc["swap_amount_out_expected_wei"])
+        payload["swap_amount_out_expected"] = format_units(int(desc["swap_amount_out_expected_wei"]), out_dec)
+    if "swap_amount_out_min_wei" in desc:
+        out_dec = int(desc.get("swap_token_out_decimals", 18))
+        payload["swap_amount_out_min_wei"] = str(desc["swap_amount_out_min_wei"])
+        payload["swap_amount_out_min"] = format_units(int(desc["swap_amount_out_min_wei"]), out_dec)
     if state is not None:
         if "to" in desc:
             label = _label_for(state, desc["to"])
@@ -150,6 +170,20 @@ def _render_preview(state: WalletState, chain: ChainConfig):
             table.add_row("token", d["token_address"])
 
         table.add_row("amount", f"{d['amount']} {d['unit']}")
+
+        # Swap-specific preview rows
+        if d.get("kind") == "swap":
+            table.add_row("route", d.get("swap_route", "?"))
+            table.add_row(
+                "expected out",
+                f"{d.get('swap_amount_out_expected', '?')} {d.get('swap_token_out_symbol', '?')}",
+            )
+            slip = d.get("swap_slippage_bps", 0)
+            table.add_row(
+                f"min out ({slip / 100}% slip)",
+                f"{d.get('swap_amount_out_min', '?')} {d.get('swap_token_out_symbol', '?')}",
+            )
+
         table.add_row("nonce", str(d.get("nonce")))
         table.add_row("gas limit", str(d.get("gas")))
         table.add_row("max fee / gas", f"{format_units(int(d['max_fee_per_gas_wei']), 9)} gwei")

@@ -91,6 +91,13 @@ uv run wallet approve set USDC <spender> --unlimited --broadcast
 uv run wallet approve show USDC --spender <spender>
 uv run wallet approve revoke USDC <spender> --broadcast
 
+# Swap (single-hop Uniswap V3 — Phase 2)
+uv run wallet swap ETH USDC 0.001                          # dry-run preview
+uv run wallet swap USDC WETH 100 --slippage-bps 50         # dry-run, 0.5% slip
+uv run wallet swap ETH USDC 0.001 --broadcast --yes        # real broadcast (TTY)
+# Requires Uniswap V3 SwapRouter02 in policy.contract_allowlist
+# ERC-20 input requires prior `wallet approve set <token> <router> <amount>`
+
 # History
 uv run wallet history                       # default account, native + contract calls
 uv run wallet history --tokens              # ERC-20 transfers
@@ -161,7 +168,41 @@ WALLET_JSON=1 wallet balance --token USDC | jq .
 **Error codes** (machine-enumerable): `validation_error`, `policy_block`,
 `idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
 `simulation_reverted`, `aborted`, `missing_request_id`,
-`confirmation_required`, `tty_required`.
+`confirmation_required`, `tty_required`, `no_route`, `insufficient_allowance`.
+
+**`swap` envelope** (additional fields under `data`):
+
+```jsonc
+{
+  "kind": "swap",
+  "swap_provider": "uniswap_v3",
+  "swap_route": "ETH > 500bps > USDC",
+  "swap_token_in_address": "0xfFf9...",
+  "swap_token_out_address": "0x1c7D...",
+  "swap_token_out_symbol": "USDC",
+  "swap_amount_out_expected_wei": "15565555",
+  "swap_amount_out_expected": "15.565555",
+  "swap_amount_out_min_wei": "15487727",
+  "swap_amount_out_min": "15.487727",
+  "swap_slippage_bps": 50
+}
+```
+
+**`insufficient_allowance` error** carries the exact corrective command:
+
+```jsonc
+{
+  "ok": false,
+  "error": "insufficient_allowance",
+  "data": {
+    "token_symbol": "USDC",
+    "spender": "0x3bFA...",
+    "current_wei": "0",
+    "required_wei": "100000000",
+    "suggested_command": "wallet approve set USDC 0x3bFA... 100"
+  }
+}
+```
 
 **Amount fields** (always strings to avoid JS bigint loss): `amount_wei`,
 `amount` (human-readable), `unit`, `decimals`. Addresses are EIP-55
