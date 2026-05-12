@@ -62,6 +62,22 @@ wallet aave positions        | jq '.data.summary'                               
 wallet aave positions        | jq '.data.supplies[] | {symbol, amount}'             # per-asset
 wallet aave rates            | jq '.data.rates[] | {symbol, supply: .supply_apr_pct, borrow: .variable_borrow_apr_pct}'
 wallet aave rates --token USDC | jq '.data.rates[0]'
+
+# Aave V3 supply / withdraw (Phase 2 PR4) — writes, needs --broadcast + --request-id
+wallet aave supply USDC 10                                                # dry-run preview, shows current HF
+wallet aave supply USDC 10 --broadcast --yes --request-id "$(uuidgen)"    # real supply
+wallet aave withdraw USDC 5 --broadcast --yes --request-id "$(uuidgen)"   # partial withdraw
+wallet aave withdraw USDC --max --broadcast --yes --request-id "$(uuidgen)"  # full withdraw
+
+# Notes for agents:
+#  - The Aave Pool address (e.g. 0x6Ae43..8951 on Sepolia) must be in
+#    policy.contract_allowlist. If you hit `aave-pool-not-in-contract-allowlist`,
+#    tell the user to add the address in their terminal.
+#  - Aave uses its own (often mock) token deployments distinct from chain
+#    builtin tokens — `wallet aave rates` lists exactly the symbols available.
+#  - supply requires prior `wallet approve set <token> <pool> <amount>`.
+#  - withdraw triggers Aave's HF-must-stay-above-1 check; if it would revert,
+#    you get `simulation_reverted` before any signing happens.
 ```
 
 ## Sending ETH or ERC-20 (signing — needs user OK + policy compliance)

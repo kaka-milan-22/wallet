@@ -215,3 +215,138 @@ def test_all_rates_parses_ray_indices():
 def test_all_rates_empty_reserves_returns_empty():
     w3 = MagicMock()
     assert get_all_rates(w3, CHAIN, reserves=[]) == []
+
+
+# --- resolve_aave_reserve ----------------------------------------------------
+
+
+def test_resolve_aave_reserve_by_symbol(monkeypatch):
+    reserves = [
+        AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6),
+        AaveReserve(symbol="WETH", asset_address=WETH_RESERVE[1], decimals=18),
+    ]
+
+    from wallet.protocols import aave as aave_mod
+    monkeypatch.setattr(aave_mod, "get_all_reserves", lambda w3, chain: reserves)
+
+    from wallet.protocols.aave import resolve_aave_reserve
+    r = resolve_aave_reserve(MagicMock(), CHAIN, "usdc")
+    assert r.symbol == "USDC"
+
+
+def test_resolve_aave_reserve_by_address(monkeypatch):
+    reserves = [
+        AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6),
+    ]
+
+    from wallet.protocols import aave as aave_mod
+    monkeypatch.setattr(aave_mod, "get_all_reserves", lambda w3, chain: reserves)
+
+    from wallet.protocols.aave import resolve_aave_reserve
+    r = resolve_aave_reserve(MagicMock(), CHAIN, USDC_RESERVE[1].lower())
+    assert r.symbol == "USDC"
+
+
+def test_resolve_aave_reserve_unknown_raises(monkeypatch):
+    from wallet.protocols import aave as aave_mod
+    monkeypatch.setattr(aave_mod, "get_all_reserves", lambda w3, chain: [])
+
+    from wallet.protocols.aave import resolve_aave_reserve
+    with pytest.raises(ValueError, match="no Aave V3 reserve"):
+        resolve_aave_reserve(MagicMock(), CHAIN, "WBTC")
+
+
+# --- prepare_supply / prepare_withdraw ---------------------------------------
+
+
+def _w3_mock_for_writes(allowance_value: int = 10**18):
+    """w3 with the contract / gas / nonce / call mocks needed by prepare_*."""
+    from web3 import Web3
+    w3 = MagicMock()
+    w3.eth.max_priority_fee = Web3.to_wei(2, "gwei")
+    w3.eth.get_block.return_value = {"baseFeePerGas": Web3.to_wei(10, "gwei")}
+    w3.eth.get_transaction_count.return_value = 5
+    w3.eth.estimate_gas.return_value = 200_000
+    w3.eth.call.return_value = b""
+
+    def contract_factory(address, abi):
+        c = MagicMock()
+        # ERC-20 allowance call (used by prepare_supply via tokens.allowance)
+        c.functions.allowance.return_value.call.return_value = allowance_value
+        # Pool.getUserAccountData → HF 2.5 with $1000 collateral
+        c.functions.getUserAccountData.return_value.call.return_value = [
+            1_000_00000000, 400_00000000, 200_00000000, 8000, 7500, 25 * 10**17,
+        ]
+        # Pool.supply / withdraw — build_transaction works via web3.py defaults;
+        # we mock encode_abi too so build_transaction can produce a tx dict
+        c.encode_abi = MagicMock(return_value="0x" + "ab" * 10)
+        # Supply/withdraw build_transaction passes through
+        c.functions.supply.return_value.build_transaction = lambda base: {
+            **base, "to": "0x" + "33" * 20, "data": "0xsupply", "value": 0, "gas": 200_000,
+        }
+        c.functions.withdraw.return_value.build_transaction = lambda base: {
+            **base, "to": "0x" + "33" * 20, "data": "0xwithdraw", "value": 0, "gas": 200_000,
+        }
+        return c
+
+    w3.eth.contract = contract_factory
+    return w3
+
+
+def test_prepare_supply_builds_tx_with_aave_kind():
+    from wallet.protocols.aave import AaveReserve, prepare_supply
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    w3 = _w3_mock_for_writes(allowance_value=10**18)
+    pt = prepare_supply(w3, CHAIN, USER, reserve, 100 * 10**6)
+
+    assert pt.description["kind"] == "aave supply"
+    assert pt.description["amount_wei"] == 100 * 10**6
+    assert pt.description["amount_unit"] == "USDC"
+    assert pt.description["aave_action"] == "supply"
+    assert pt.description["aave_asset_address"] == USDC_RESERVE[1]
+    # current HF preserved from mock (2.5)
+    assert float(pt.description["aave_current_hf"]) == 2.5
+    assert pt.tx["to"] == "0x" + "33" * 20
+
+
+def test_prepare_supply_insufficient_allowance_raises():
+    from wallet.protocols.aave import AaveReserve, prepare_supply
+    from wallet.protocols.swap import InsufficientAllowance
+
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+    w3 = _w3_mock_for_writes(allowance_value=0)  # no allowance
+
+    with pytest.raises(InsufficientAllowance) as exc:
+        prepare_supply(w3, CHAIN, USER, reserve, 100 * 10**6)
+
+    e = exc.value
+    assert e.token_symbol == "USDC"
+    assert e.required_wei == 100 * 10**6
+    assert e.current_wei == 0
+
+
+def test_prepare_withdraw_builds_tx_with_aave_kind():
+    from wallet.protocols.aave import AaveReserve, prepare_withdraw
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    w3 = _w3_mock_for_writes()
+    pt = prepare_withdraw(w3, CHAIN, USER, reserve, 50 * 10**6)
+
+    assert pt.description["kind"] == "aave withdraw"
+    assert pt.description["amount_wei"] == 50 * 10**6
+    assert pt.description["aave_action"] == "withdraw"
+    assert pt.description["aave_withdraw_max"] is False
+
+
+def test_prepare_withdraw_max_marks_in_description():
+    from wallet.protocols.aave import (
+        AaveReserve, WITHDRAW_MAX_AMOUNT, prepare_withdraw,
+    )
+    reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
+
+    w3 = _w3_mock_for_writes()
+    pt = prepare_withdraw(w3, CHAIN, USER, reserve, WITHDRAW_MAX_AMOUNT)
+
+    assert pt.description["aave_withdraw_max"] is True
+    assert pt.description["amount_wei"] == WITHDRAW_MAX_AMOUNT

@@ -61,6 +61,10 @@ def _category(prepared: PreparedTx) -> str:
     kind = prepared.description.get("kind", "")
     if kind == "swap":
         return "swap"
+    if kind == "aave supply":
+        return "aave_supply"
+    if kind == "aave withdraw":
+        return "aave_withdraw"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -69,11 +73,15 @@ def _category(prepared: PreparedTx) -> str:
 
 
 def _kind_machine(prepared: PreparedTx) -> str:
-    """Stable machine-readable kind: native_transfer / erc20_transfer / erc20_approve / swap."""
+    """Stable machine-readable kind: native_transfer / erc20_transfer / erc20_approve / swap / aave_*."""
     desc = prepared.description
     kind_raw = desc.get("kind", "")
     if kind_raw == "swap":
         return "swap"
+    if kind_raw == "aave supply":
+        return "aave_supply"
+    if kind_raw == "aave withdraw":
+        return "aave_withdraw"
     if kind_raw == "native transfer":
         return "native_transfer"
     if "approve" in kind_raw:
@@ -121,6 +129,13 @@ def _build_data(
         "swap_token_in_address", "swap_token_out_address",
         "swap_token_out_symbol", "swap_token_out_decimals",
         "swap_slippage_bps", "swap_route", "swap_provider",
+    ):
+        if key in desc:
+            payload[key] = desc[key]
+    # Aave-specific fields (only present for aave_supply / aave_withdraw)
+    for key in (
+        "aave_action", "aave_asset_address", "aave_pool",
+        "aave_current_hf", "aave_withdraw_max",
     ):
         if key in desc:
             payload[key] = desc[key]
@@ -183,6 +198,23 @@ def _render_preview(state: WalletState, chain: ChainConfig):
                 f"min out ({slip / 100}% slip)",
                 f"{d.get('swap_amount_out_min', '?')} {d.get('swap_token_out_symbol', '?')}",
             )
+
+        # Aave-specific preview rows
+        if d.get("kind") in ("aave_supply", "aave_withdraw"):
+            hf = d.get("aave_current_hf", "?")
+            try:
+                hf_num = float(hf)
+                if hf_num < 1.1:
+                    hf_display = f"[red]{hf_num:.3f}[/red]"
+                elif hf_num < 1.5:
+                    hf_display = f"[yellow]{hf_num:.3f}[/yellow]"
+                else:
+                    hf_display = f"[green]{hf_num:.3f}[/green]"
+            except (ValueError, TypeError):
+                hf_display = "[green]∞ (no debt)[/green]" if hf == "inf" else str(hf)
+            table.add_row("current HF", hf_display)
+            if d.get("aave_withdraw_max"):
+                table.add_row("withdraw mode", "[bold]max (full aToken balance)[/bold]")
 
         table.add_row("nonce", str(d.get("nonce")))
         table.add_row("gas limit", str(d.get("gas")))

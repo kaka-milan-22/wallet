@@ -6,14 +6,21 @@ from rich.table import Table
 from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, make_web3
+from wallet.cli._common import confirm_and_broadcast
+from wallet.core.rpc import parse_units
 from wallet.protocols.aave import (
+    WITHDRAW_MAX_AMOUNT,
     base_to_usd,
     get_account_summary,
     get_all_rates,
     get_all_reserves,
     get_user_positions,
+    prepare_supply,
+    prepare_withdraw,
     ray_to_pct,
+    resolve_aave_reserve,
 )
+from wallet.protocols.swap import InsufficientAllowance
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="Aave V3 read-only views (positions, rates)")
@@ -206,3 +213,147 @@ def rates(
         stdout_console().print(t)
 
     emit(data, render)
+
+
+@app.command("supply")
+def supply(
+    token: str = typer.Argument(..., help="Aave reserve symbol (e.g. USDC, WETH) or 0x address"),
+    amount: str = typer.Argument(..., help="Amount in human units (e.g. 100)"),
+    account: str | None = typer.Option(None, "--account", "-a"),
+    chain: str | None = typer.Option(None, "--chain"),
+    broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+) -> None:
+    """Supply tokens to an Aave V3 reserve (earn supply APR)."""
+    from wallet.cli._output import emit_error as _emit_err
+    from wallet.core.config import get_chain
+    from wallet.core.rpc import format_units, make_web3
+
+    state = load_state()
+    cfg = get_chain(chain or state.default_chain)
+    w3 = make_web3(cfg)
+
+    if account:
+        sender = state.find_account(account)
+        if not sender:
+            _emit_err("validation_error", command="aave.supply", chain=cfg.name,
+                      reason=f"unknown account: {account}")
+            raise typer.Exit(code=2)
+    else:
+        sender = state.get_default_account()
+        if not sender:
+            _emit_err("validation_error", command="aave.supply", chain=cfg.name,
+                      reason="no default account; pass --account")
+            raise typer.Exit(code=2)
+
+    try:
+        reserve = resolve_aave_reserve(w3, cfg, token)
+    except ValueError as e:
+        _emit_err("not_found", command="aave.supply", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        amount_wei = parse_units(amount, reserve.decimals)
+    except ValueError as e:
+        _emit_err("validation_error", command="aave.supply", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    try:
+        prepared = prepare_supply(w3, cfg, sender.address, reserve, amount_wei)
+    except InsufficientAllowance as e:
+        _emit_err(
+            "insufficient_allowance",
+            command="aave.supply", chain=cfg.name,
+            reason=str(e),
+            data={
+                "token_symbol": e.token_symbol,
+                "token_address": e.token_address,
+                "spender": e.spender,
+                "current_wei": str(e.current_wei),
+                "current": format_units(e.current_wei, reserve.decimals),
+                "required_wei": str(e.required_wei),
+                "required": format_units(e.required_wei, reserve.decimals),
+                "suggested_command": (
+                    f"wallet approve set {e.token_symbol} {e.spender} "
+                    f"{format_units(e.required_wei, reserve.decimals)}"
+                ),
+            },
+        )
+        raise typer.Exit(code=2)
+
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes,
+        policy_bypass=policy_bypass, request_id=request_id,
+    )
+
+
+@app.command("withdraw")
+def withdraw(
+    token: str = typer.Argument(..., help="Aave reserve symbol or 0x address"),
+    amount: str = typer.Argument(None, help="Amount in human units (omit if --max)"),
+    max_: bool = typer.Option(False, "--max", help="Withdraw the entire aToken balance"),
+    account: str | None = typer.Option(None, "--account", "-a"),
+    chain: str | None = typer.Option(None, "--chain"),
+    broadcast: bool = typer.Option(False, "--broadcast/--dry-run"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
+    request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+) -> None:
+    """Withdraw tokens from an Aave V3 reserve.
+
+    Aave reverts if the post-withdraw health factor would drop below 1.0.
+    """
+    from wallet.cli._output import emit_error as _emit_err
+    from wallet.core.config import get_chain
+    from wallet.core.rpc import make_web3
+
+    state = load_state()
+    cfg = get_chain(chain or state.default_chain)
+    w3 = make_web3(cfg)
+
+    if account:
+        sender = state.find_account(account)
+        if not sender:
+            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name,
+                      reason=f"unknown account: {account}")
+            raise typer.Exit(code=2)
+    else:
+        sender = state.get_default_account()
+        if not sender:
+            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name,
+                      reason="no default account; pass --account")
+            raise typer.Exit(code=2)
+
+    try:
+        reserve = resolve_aave_reserve(w3, cfg, token)
+    except ValueError as e:
+        _emit_err("not_found", command="aave.withdraw", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
+
+    if max_:
+        if amount is not None:
+            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name,
+                      reason="cannot pass both --max and an amount")
+            raise typer.Exit(code=2)
+        amount_wei = WITHDRAW_MAX_AMOUNT
+    else:
+        if amount is None:
+            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name,
+                      reason="amount required (or use --max)")
+            raise typer.Exit(code=2)
+        try:
+            amount_wei = parse_units(amount, reserve.decimals)
+        except ValueError as e:
+            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name, reason=str(e))
+            raise typer.Exit(code=2)
+
+    prepared = prepare_withdraw(w3, cfg, sender.address, reserve, amount_wei)
+
+    confirm_and_broadcast(
+        w3, state, cfg, sender, prepared,
+        dry_run=not broadcast, yes=yes,
+        policy_bypass=policy_bypass, request_id=request_id,
+    )

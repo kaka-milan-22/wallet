@@ -94,10 +94,14 @@ def default_policy() -> Policy:
 
 
 def _category(prepared) -> str:
-    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'unknown'."""
+    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'aave_*' / 'unknown'."""
     kind = prepared.description.get("kind", "")
     if kind == "swap":
         return "swap"
+    if kind == "aave supply":
+        return "aave_supply"
+    if kind == "aave withdraw":
+        return "aave_withdraw"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -265,6 +269,17 @@ def evaluate(
             return Decision(
                 allowed=False,
                 reason="swap-router-not-in-contract-allowlist",
+                severity="block",
+            )
+
+    # --- 3c. aave supply / withdraw: pool must be in contract_allowlist ---
+    if category in ("aave_supply", "aave_withdraw"):
+        pool = desc.get("to")
+        contracts = {a.lower() for a in policy.contract_allowlist}
+        if pool and pool.lower() not in contracts:
+            return Decision(
+                allowed=False,
+                reason="aave-pool-not-in-contract-allowlist",
                 severity="block",
             )
 

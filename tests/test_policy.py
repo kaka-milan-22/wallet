@@ -331,6 +331,65 @@ def test_swap_per_tx_cap_applies_to_token_in(isolated_files):
     assert "max-per-tx-exceeded:USDC:10" in d.reason
 
 
+# --- aave_supply / aave_withdraw categories ----------------------------------
+
+
+def test_aave_supply_blocked_when_pool_not_in_contract_allowlist(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "1000"},
+        contract_allowlist=[],  # pool NOT here
+    ))
+    pt = FakePrepared(
+        kind="aave supply", to=pool,
+        amount_wei=10 * 10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason == "aave-pool-not-in-contract-allowlist"
+
+
+def test_aave_withdraw_blocked_when_pool_not_in_contract_allowlist(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(contract_allowlist=[]))
+    pt = FakePrepared(
+        kind="aave withdraw", to=pool,
+        amount_wei=10 * 10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason == "aave-pool-not-in-contract-allowlist"
+
+
+def test_aave_supply_allowed_when_pool_in_contract_allowlist(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "1000"},
+        contract_allowlist=[pool],
+    ))
+    pt = FakePrepared(
+        kind="aave supply", to=pool,
+        amount_wei=10 * 10**6, amount_unit="USDC", amount_decimals=6,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_aave_supply_per_tx_cap_applies_to_asset(isolated_files):
+    pool = "0x" + "ab" * 20
+    save_policy(Policy(
+        max_per_tx={"USDC": "5"},
+        contract_allowlist=[pool],
+    ))
+    pt = FakePrepared(
+        kind="aave supply", to=pool,
+        amount_wei=100 * 10**6, amount_unit="USDC", amount_decimals=6,  # 100 > 5 cap
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert not d.allowed
+    assert "max-per-tx-exceeded:USDC:5" in d.reason
+
+
 # --- schema validation -------------------------------------------------------
 
 

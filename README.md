@@ -113,6 +113,18 @@ uv run wallet aave rates                    # current supply / variable-borrow A
 uv run wallet aave rates --token USDC       # filter to one symbol
 uv run wallet --json aave positions | jq '.data.summary.health_factor'
 
+# Aave V3 — supply / withdraw (Phase 2 PR4)
+# Note: Aave's testnet uses its own mock tokens — get them via the Aave faucet
+#       (https://staging.aave.com/faucet/), NOT the same as wallet builtin USDC.
+# Sepolia Pool 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951 must be in policy.contract_allowlist.
+uv run wallet aave supply USDC 10                              # dry-run
+uv run wallet approve set USDC 0x6Ae43...8951 10 --broadcast   # one-time approve to Aave Pool
+uv run wallet aave supply USDC 10 --broadcast --yes            # supply 10 Aave-USDC
+uv run wallet aave withdraw USDC 5 --broadcast --yes           # partial withdraw
+uv run wallet aave withdraw USDC --max --broadcast --yes       # withdraw entire aToken balance
+# Aave reverts if a withdraw would drop your HF < 1.0; our `_simulate` surfaces this
+# as a clean `simulation_reverted` error before any signing.
+
 # History
 uv run wallet history                       # default account, native + contract calls
 uv run wallet history --tokens              # ERC-20 transfers

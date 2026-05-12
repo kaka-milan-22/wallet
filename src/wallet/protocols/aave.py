@@ -80,7 +80,33 @@ AAVE_POOL_ABI = [
             {"name": "healthFactor", "type": "uint256"},
         ],
     },
+    {
+        "name": "supply",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "asset", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+            {"name": "onBehalfOf", "type": "address"},
+            {"name": "referralCode", "type": "uint16"},
+        ],
+        "outputs": [],
+    },
+    {
+        "name": "withdraw",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "asset", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+            {"name": "to", "type": "address"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
 ]
+
+
+WITHDRAW_MAX_AMOUNT = 2**256 - 1  # Aave convention: type(uint256).max = "withdraw all"
 
 
 AAVE_DATA_PROVIDER_ABI = [
@@ -290,3 +316,160 @@ def base_to_usd(base_wei: int) -> str:
     if base_wei == 0:
         return "0.00"
     return f"{base_wei / 10**AAVE_BASE_DECIMALS:.2f}"
+
+
+# --- reserve resolution ------------------------------------------------------
+
+
+def resolve_aave_reserve(w3, chain: ChainConfig, query: str) -> AaveReserve:
+    """Resolve a symbol ('USDC') or 0x address to an `AaveReserve`.
+
+    Aave registers its own (often mock) tokens on testnets, distinct from the
+    chain's builtin Circle USDC / canonical WETH. So we look up against
+    Aave's actual reserve list, not chain.builtin_tokens.
+    """
+    reserves = get_all_reserves(w3, chain)
+    q = query.strip()
+
+    if q.startswith("0x"):
+        for r in reserves:
+            if r.asset_address.lower() == q.lower():
+                return r
+        raise ValueError(f"no Aave V3 reserve at address {q}")
+
+    qu = q.upper()
+    for r in reserves:
+        if r.symbol.upper() == qu:
+            return r
+    raise ValueError(
+        f"no Aave V3 reserve with symbol {q!r}. "
+        f"Available: {', '.join(r.symbol for r in reserves)}"
+    )
+
+
+# --- write helpers: prepare_supply / prepare_withdraw -----------------------
+
+
+# Imported lazily to avoid a hard dep when only view helpers are used
+def _prepare_common_imports():
+    from wallet.core.tokens import allowance
+    from wallet.core.tx import PreparedTx, _common_fields, _simulate
+    from wallet.protocols.swap import InsufficientAllowance
+    return PreparedTx, _common_fields, _simulate, allowance, InsufficientAllowance
+
+
+def prepare_supply(
+    w3,
+    chain: ChainConfig,
+    sender: str,
+    reserve: AaveReserve,
+    amount_wei: int,
+):
+    """Build an unsigned `Pool.supply(asset, amount, onBehalfOf=sender, 0)` tx.
+
+    Raises `InsufficientAllowance` (from `protocols.swap`) if the sender hasn't
+    approved the Aave Pool for at least `amount_wei` of the asset. The
+    `wallet swap` allowance-error envelope reuse means agents already know
+    how to recover.
+    """
+    PreparedTx, _common_fields, _simulate, allowance, InsufficientAllowance = (
+        _prepare_common_imports()
+    )
+
+    sender_cs = Web3.to_checksum_address(sender)
+    pool_addr = Web3.to_checksum_address(
+        get_protocol_address(chain, "aave_v3", "pool")
+    )
+
+    current = allowance(w3, reserve.asset_address, sender_cs, pool_addr)
+    if current < amount_wei:
+        raise InsufficientAllowance(
+            token_symbol=reserve.symbol,
+            token_address=reserve.asset_address,
+            spender=pool_addr,
+            current_wei=current,
+            required_wei=amount_wei,
+        )
+
+    summary = get_account_summary(w3, chain, sender_cs)
+
+    pool = w3.eth.contract(address=pool_addr, abi=AAVE_POOL_ABI)
+    base = _common_fields(w3, chain, sender)
+    tx = pool.functions.supply(
+        Web3.to_checksum_address(reserve.asset_address),
+        amount_wei,
+        sender_cs,
+        0,  # referralCode — Aave deprecated this; pass 0
+    ).build_transaction(base)
+    _simulate(w3, tx)
+    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+
+    return PreparedTx(
+        tx=tx,
+        estimated_fee_wei=fee_wei,
+        description={
+            "kind": "aave supply",
+            "from": tx["from"],
+            "to": pool_addr,
+            "amount_wei": amount_wei,
+            "amount_unit": reserve.symbol,
+            "amount_decimals": reserve.decimals,
+            "aave_action": "supply",
+            "aave_asset_address": reserve.asset_address,
+            "aave_pool": pool_addr,
+            "aave_current_hf": str(summary.health_factor) if summary.health_factor is not None else "inf",
+        },
+    )
+
+
+def prepare_withdraw(
+    w3,
+    chain: ChainConfig,
+    sender: str,
+    reserve: AaveReserve,
+    amount_wei: int,
+):
+    """Build an unsigned `Pool.withdraw(asset, amount, to=sender)` tx.
+
+    Pass `amount_wei = WITHDRAW_MAX_AMOUNT` to withdraw the entire aToken
+    balance (Aave convention). Aave reverts when the post-withdraw HF would
+    drop below 1.0, which `_simulate` surfaces as a clean
+    `simulation_reverted` error so the agent doesn't need to predict it.
+    """
+    PreparedTx, _common_fields, _simulate, _, _ = _prepare_common_imports()
+
+    sender_cs = Web3.to_checksum_address(sender)
+    pool_addr = Web3.to_checksum_address(
+        get_protocol_address(chain, "aave_v3", "pool")
+    )
+
+    summary = get_account_summary(w3, chain, sender_cs)
+
+    pool = w3.eth.contract(address=pool_addr, abi=AAVE_POOL_ABI)
+    base = _common_fields(w3, chain, sender)
+    tx = pool.functions.withdraw(
+        Web3.to_checksum_address(reserve.asset_address),
+        amount_wei,
+        sender_cs,
+    ).build_transaction(base)
+    _simulate(w3, tx)
+    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+
+    is_max = amount_wei == WITHDRAW_MAX_AMOUNT
+    return PreparedTx(
+        tx=tx,
+        estimated_fee_wei=fee_wei,
+        description={
+            "kind": "aave withdraw",
+            "from": tx["from"],
+            "to": pool_addr,
+            "amount_wei": amount_wei,
+            "amount_unit": reserve.symbol,
+            "amount_decimals": reserve.decimals,
+            "aave_action": "withdraw",
+            "aave_asset_address": reserve.asset_address,
+            "aave_pool": pool_addr,
+            "aave_current_hf": str(summary.health_factor) if summary.health_factor is not None else "inf",
+            "aave_withdraw_max": is_max,
+        },
+    )
