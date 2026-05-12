@@ -78,6 +78,11 @@ uv run wallet balance                       # default account, native
 uv run wallet balance --token USDC
 uv run wallet balance --all                 # every account + watched address
 
+# Portfolio — all tokens at once (native + builtin + user-registered)
+uv run wallet portfolio                     # default account, every known token
+uv run wallet portfolio --all               # every account + watched, all tokens
+uv run wallet --json portfolio | jq '.data.accounts[].balances[] | select(.amount != "0")'
+
 # Transfer (DRY-RUN by default — pass --broadcast to actually send)
 uv run wallet send @alice 0.01
 uv run wallet send 0xabc... 50 --token USDC
