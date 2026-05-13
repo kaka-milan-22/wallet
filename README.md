@@ -104,6 +104,7 @@ Both `main` and `second` share the same vault key. One mnemonic, many addresses.
 uv run wallet balance                       # default account, native
 uv run wallet balance --token USDC
 uv run wallet balance --all                 # every account + watched address
+uv run wallet balance --account 0xd8dA...   # one-shot lookup by bare 0x address (no watch add needed)
 
 # Portfolio — all tokens at once (native + builtin + user-registered)
 uv run wallet portfolio                     # default account, every known token
@@ -172,7 +173,78 @@ uv run wallet history --address 0x...       # arbitrary lookup
 uv run wallet book add alice 0xabc...
 uv run wallet watch add 0xdef... --label vitalik
 uv run wallet token add 0x779877A7B0D9E8603169DdbD7836e478b4624789  # adds LINK
+
+# Chain inspection + multi-chain
+uv run wallet chain list                    # builtin (sepolia) + user-added chains, ★ marks default
+uv run wallet chain show ethereum           # full ChainConfig dump including protocol addresses
+uv run wallet info                          # active chain (reads state.default_chain)
+uv run wallet info --chain ethereum         # peek at another chain without switching default
+uv run wallet balance --chain ethereum      # any command takes --chain to override per-call
 ```
+
+## Multi-chain support
+
+Builtin only ships **Sepolia** out of the box. To add Ethereum mainnet (or
+Base / Arbitrum / any EVM chain), write a JSON entry to
+`~/Library/Application Support/wallet/chains.json` in your terminal:
+
+```jsonc
+{
+  "ethereum": {
+    "name": "ethereum",
+    "chain_id": 1,
+    "rpc_url": "https://eth.drpc.org",        // or your Alchemy/Infura/Cloudflare URL
+    "explorer_api_url": "https://api.etherscan.io/v2/api",
+    "explorer_tx_url": "https://etherscan.io/tx/{tx}",
+    "native_symbol": "ETH",
+    "builtin_tokens": {
+      "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      "DAI":  "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+    },
+    "protocols": {
+      "uniswap_v3": {
+        "swap_router_v2": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+        "quoter_v2":      "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+        "factory":        "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+      },
+      "aave_v3": {
+        "pool":          "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+        "data_provider": "0x41393e5e337606dc3821075Af65AeE84D7688CBD",
+        "oracle":        "0x54586bE62E3c3580375aE3723C145253060Ca0C2"
+      }
+    }
+  }
+}
+```
+
+`wallet chain list` lists every available chain; user-added entries are
+marked `user-added`, and an entry whose name matches a builtin is marked
+`user-override` (your fields win).
+
+**Public RPC choice** — for "use without registering with anyone":
+`https://eth.drpc.org`, `https://ethereum.publicnode.com`,
+`https://eth.api.onfinality.io/public` are all reliable as of testing.
+Use `https://rpc.flashbots.net` for **broadcasting** mainnet swaps if MEV
+protection matters (note: it doesn't whitelist `eth_call` so reads need
+a separate RPC — single `rpc_url` schema today means you pick one role).
+`cloudflare-eth.com` is **deprecated** as a Web3 Gateway — most methods
+return `-32603` errors.
+
+**Switching default**: any command accepts `--chain <name>`; to make a
+chain the implicit default, edit `state.json` in your terminal:
+
+```sh
+P="$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"
+jq '.default_chain = "ethereum"' "$P" > "$P.tmp" && mv "$P.tmp" "$P"
+```
+
+⚠️ Before switching default to a non-sepolia chain, **re-populate
+`policy.json`'s `contract_allowlist`** with that chain's protocol
+addresses. Sepolia's Uniswap router / Aave Pool addresses are different
+from mainnet, and policy is global (not per-chain). A wrong allowlist
+means every write is `policy_block`.
 
 ## End-to-end test (Sepolia)
 
