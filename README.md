@@ -449,9 +449,10 @@ preview → policy.evaluate → idempotency.lookup → confirm → sign → broa
 idempotency.record + audit.write. Every layer can short-circuit and writes
 its own audit entry.
 
-## Phase 2 (not in this repo yet)
+## What's next
 
-DEX swap (0x / 1inch aggregator), Aave V3 supply / borrow / repay, Lido
-staking, and a `protocols/` directory that drops in alongside `core/`. The
-existing tx pipeline is the entry point — protocol modules just produce
-unsigned txs and hand them to `core/tx.py`.
+See [`ROADMAP.md`](ROADMAP.md) for the current backlog. The biggest gating
+item is **Hardware wallet (Ledger) integration** — until that lands, this is
+a hot wallet appropriate for testnet experimentation and small daily-spend
+mainnet use; see [`docs/why_hard_wallet.md`](docs/why_hard_wallet.md) for
+the threat-model rationale.
