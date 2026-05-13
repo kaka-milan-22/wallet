@@ -3,9 +3,10 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
+from wallet.cli._common import make_web3_or_exit
 from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
-from wallet.core.rpc import format_units, make_web3
+from wallet.core.rpc import format_units
 from wallet.core.tokens import balance_of, resolve_token
 from wallet.storage.state import load_state
 
@@ -23,6 +24,14 @@ def _resolve_targets(state, account: str | None, all_watched: bool) -> list[tupl
         for w in state.watch:
             if w.label == account or w.address.lower() == account.lower():
                 return [(w.label or w.address, w.address)]
+        # Bare 0x address — one-shot lookup without needing prior `watch add`
+        if account.startswith("0x") and len(account) == 42:
+            from web3 import Web3
+            try:
+                addr = Web3.to_checksum_address(account)
+                return [(account[:10] + "…", addr)]
+            except ValueError:
+                pass
         raise typer.BadParameter(f"no account or watched address: {account}")
 
     a = state.get_default_account()
@@ -40,7 +49,7 @@ def balance(
     """Show native or ERC-20 balance for one or more addresses."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="balance")
 
     try:
         targets = _resolve_targets(state, account, all_watched)

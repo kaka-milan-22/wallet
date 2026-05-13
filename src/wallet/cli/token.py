@@ -5,7 +5,7 @@ from rich.table import Table
 
 from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core.config import get_chain
-from wallet.core.rpc import make_web3
+from wallet.cli._common import make_web3_or_exit
 from wallet.core.tokens import fetch_token_info
 from wallet.storage.state import TokenEntry, load_state, save_state
 
@@ -26,8 +26,8 @@ def add(
 
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
+    w3 = make_web3_or_exit(cfg, command="token.add")
     try:
-        w3 = make_web3(cfg)
         info_ = fetch_token_info(w3, address)
     except Exception as e:
         emit_error("rpc_error", command="token.add", chain=cfg.name,

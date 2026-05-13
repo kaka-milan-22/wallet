@@ -17,10 +17,23 @@ from wallet.cli._output import (
     stdout_console,
 )
 from wallet.core.config import ChainConfig
-from wallet.core.rpc import format_units
+from wallet.core.rpc import RpcConnectError, format_units
+from wallet.core.rpc import make_web3 as _make_web3_raw
 from wallet.core.signer import sign_transaction
 from wallet.core.tx import PreparedTx, broadcast
 from wallet.storage.state import WalletState
+
+
+def make_web3_or_exit(chain: ChainConfig, *, command: str):
+    """Build a Web3 client and convert `RpcConnectError` into a clean
+    `rpc_error` envelope + `typer.Exit(1)`. Use this from every CLI command
+    instead of calling `core.rpc.make_web3` directly, so RPC failures never
+    surface as raw Python tracebacks."""
+    try:
+        return _make_web3_raw(chain)
+    except RpcConnectError as e:
+        emit_error("rpc_error", command=command, chain=chain.name, reason=str(e))
+        raise typer.Exit(code=1)
 
 
 def resolve_address(state: WalletState, query: str) -> str:

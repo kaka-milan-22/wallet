@@ -7,6 +7,7 @@ from wallet.cli import aave as aave_cli
 from wallet.cli import account as account_cli
 from wallet.cli import approve as approve_cli
 from wallet.cli import book as book_cli
+from wallet.cli import chain as chain_cli
 from wallet.cli import policy as policy_cli
 from wallet.cli import token as token_cli
 from wallet.cli import watch as watch_cli
@@ -29,6 +30,7 @@ app.add_typer(watch_cli.app, name="watch")
 app.add_typer(token_cli.app, name="token")
 app.add_typer(policy_cli.app, name="policy")
 app.add_typer(aave_cli.app, name="aave")
+app.add_typer(chain_cli.app, name="chain")
 app.command("balance")(balance_cmd)
 app.command("portfolio")(portfolio_cmd)
 app.command("send")(send_cmd)
@@ -69,22 +71,33 @@ def version() -> None:
 
 
 @app.command()
-def info() -> None:
-    """Show config paths and default chain."""
+def info(
+    chain: str | None = typer.Option(None, "--chain", help="Inspect a specific chain (default: state.default_chain)"),
+) -> None:
+    """Show config paths and the resolved chain (default or `--chain`)."""
     from wallet.core.config import get_chain
-    from wallet.storage.state import state_path
+    from wallet.storage.state import load_state, state_path
 
-    chain = get_chain("sepolia")
+    state = load_state()
+    resolved_chain_name = chain or state.default_chain
+    try:
+        chain_cfg = get_chain(resolved_chain_name)
+    except ValueError as e:
+        from wallet.cli._output import emit_error
+        emit_error("not_found", command="info", reason=str(e))
+        raise typer.Exit(code=1)
+
     data = {
         "ok": True,
         "command": "info",
-        "chain": chain.name,
+        "chain": chain_cfg.name,
         "data": {
             "state_file": str(state_path()),
-            "default_chain": chain.name,
-            "chain_id": chain.chain_id,
-            "rpc_url": chain.rpc_url,
-            "explorer_tx_url": chain.explorer_tx_url,
+            "default_chain": state.default_chain,
+            "active_chain": chain_cfg.name,
+            "chain_id": chain_cfg.chain_id,
+            "rpc_url": chain_cfg.rpc_url,
+            "explorer_tx_url": chain_cfg.explorer_tx_url,
         },
     }
 
@@ -92,7 +105,8 @@ def info() -> None:
         c = stdout_console()
         x = d["data"]
         c.print(f"state file:   [dim]{x['state_file']}[/dim]")
-        c.print(f"default chain:[dim] {x['default_chain']} (chainId={x['chain_id']})[/dim]")
+        c.print(f"default chain:[dim] {x['default_chain']}[/dim]")
+        c.print(f"active chain: [bold cyan]{x['active_chain']}[/bold cyan] (chainId={x['chain_id']})")
         c.print(f"rpc:          [dim]{x['rpc_url']}[/dim]")
         c.print(f"explorer:     [dim]{x['explorer_tx_url']}[/dim]")
 

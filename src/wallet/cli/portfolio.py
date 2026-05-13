@@ -23,7 +23,8 @@ from web3 import Web3
 
 from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core.config import get_chain
-from wallet.core.rpc import format_units, make_web3
+from wallet.cli._common import make_web3_or_exit
+from wallet.core.rpc import format_units
 from wallet.core.tokens import balance_of, fetch_token_info
 from wallet.storage.state import load_state
 
@@ -106,7 +107,7 @@ def portfolio(
     """Show native + all known tokens balances for one or many accounts."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="portfolio")
 
     # Resolve which accounts to query
     if all_accounts:

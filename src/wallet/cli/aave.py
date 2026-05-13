@@ -5,10 +5,9 @@ from rich.table import Table
 
 from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core.config import get_chain
-from wallet.core.rpc import format_units, make_web3
 from web3.exceptions import ContractLogicError as _ContractLogicError
 
-from wallet.cli._common import confirm_and_broadcast
+from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit
 from wallet.core.rpc import parse_units
 from wallet.protocols.aave import (
     REPAY_MAX_AMOUNT,
@@ -90,6 +89,14 @@ def _resolve_account(state, account: str | None) -> tuple[str, str]:
         for w in state.watch:
             if w.label == account or w.address.lower() == account.lower():
                 return (w.label or w.address[:10]), w.address
+        # Bare 0x address — one-shot lookup without needing prior `watch add`
+        if account.startswith("0x") and len(account) == 42:
+            from web3 import Web3
+            try:
+                addr = Web3.to_checksum_address(account)
+                return account[:10] + "…", addr
+            except ValueError:
+                pass
         raise typer.BadParameter(f"no account or watched address: {account}")
     a = state.get_default_account()
     if not a:
@@ -105,7 +112,7 @@ def positions(
     """Show your Aave V3 supplies / borrows + health factor."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.positions")
 
     try:
         label, address = _resolve_account(state, account)
@@ -220,7 +227,7 @@ def rates(
     """Show current supply / borrow APRs for every reserve."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.rates")
 
     reserves = get_all_reserves(w3, cfg)
     if token:
@@ -285,11 +292,10 @@ def supply(
     """Supply tokens to an Aave V3 reserve (earn supply APR)."""
     from wallet.cli._output import emit_error as _emit_err
     from wallet.core.config import get_chain
-    from wallet.core.rpc import format_units, make_web3
 
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.supply")
 
     if account:
         sender = state.find_account(account)
@@ -372,11 +378,10 @@ def withdraw(
     """
     from wallet.cli._output import emit_error as _emit_err
     from wallet.core.config import get_chain
-    from wallet.core.rpc import make_web3
 
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.withdraw")
 
     if account:
         sender = state.find_account(account)
@@ -452,11 +457,10 @@ def faucet(
     """
     from wallet.cli._output import emit_error as _emit_err
     from wallet.core.config import get_chain
-    from wallet.core.rpc import make_web3
 
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.faucet")
 
     if account:
         sender = state.find_account(account)
@@ -521,11 +525,10 @@ def borrow(
     """
     from wallet.cli._output import emit_error as _emit_err
     from wallet.core.config import get_chain
-    from wallet.core.rpc import make_web3
 
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.borrow")
 
     if account:
         sender = state.find_account(account)
@@ -589,11 +592,10 @@ def repay(
     """
     from wallet.cli._output import emit_error as _emit_err
     from wallet.core.config import get_chain
-    from wallet.core.rpc import format_units, make_web3
 
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="aave.repay")
 
     if account:
         sender = state.find_account(account)

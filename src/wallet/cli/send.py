@@ -5,7 +5,7 @@ from rich.console import Console
 
 from wallet.cli._common import confirm_and_broadcast, resolve_address
 from wallet.core.config import get_chain
-from wallet.core.rpc import make_web3, parse_units
+from wallet.core.rpc import parse_units
 from wallet.core.tokens import resolve_token
 from wallet.core.tx import prepare_erc20_transfer, prepare_native_transfer
 from wallet.storage.state import load_state
@@ -31,7 +31,7 @@ def send(
     """
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="send")
 
     if account:
         sender = state.find_account(account)

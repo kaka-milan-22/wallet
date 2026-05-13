@@ -3,10 +3,10 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
-from wallet.cli._common import confirm_and_broadcast, resolve_address
+from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit, resolve_address
 from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
-from wallet.core.rpc import format_units, make_web3, parse_units
+from wallet.core.rpc import format_units, parse_units
 from wallet.core.tokens import MAX_UINT256, allowance as get_allowance, resolve_token
 from wallet.core.tx import prepare_erc20_approve
 from wallet.storage.state import load_state
@@ -42,7 +42,7 @@ def set_allowance(
     """Approve a spender to move tokens on your behalf."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="approve")
 
     try:
         sender = _sender(state, account)
@@ -97,7 +97,7 @@ def show(
                    reason="--spender is required")
         raise typer.Exit(code=2)
 
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="approve")
 
     try:
         info_ = resolve_token(w3, cfg, state, token)
@@ -160,7 +160,7 @@ def revoke(
     """Revoke a spender's allowance (sets it to 0)."""
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="approve")
 
     try:
         sender = _sender(state, account)

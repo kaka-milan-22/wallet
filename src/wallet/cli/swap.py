@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import typer
 
-from wallet.cli._common import confirm_and_broadcast
+from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit
 from wallet.cli._output import emit_error
 from wallet.core.config import get_chain
-from wallet.core.rpc import make_web3, parse_units
+from wallet.core.rpc import parse_units
 from wallet.core.tokens import TokenInfo, resolve_token
 from wallet.protocols.routes.auto import AutoFallbackRoute
 from wallet.protocols.routes.base import NoRouteError
@@ -65,7 +65,7 @@ def swap(
     """
     state = load_state()
     cfg = get_chain(chain or state.default_chain)
-    w3 = make_web3(cfg)
+    w3 = make_web3_or_exit(cfg, command="swap")
 
     # Sender account
     if account:

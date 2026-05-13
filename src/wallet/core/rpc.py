@@ -1,21 +1,50 @@
 from __future__ import annotations
 
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import HTTPError, Timeout
 from web3 import HTTPProvider, Web3
+from web3.exceptions import Web3RPCError
 
 from wallet.core.config import ChainConfig
+
+
+class RpcConnectError(RuntimeError):
+    """Raised when the RPC endpoint is unreachable, unauthenticated,
+    rate-limited, or returns a fatal JSON-RPC error during the chainId
+    handshake. CLI commands convert this to an `rpc_error` envelope so
+    the user gets a clean message instead of a Python traceback."""
 
 
 def make_web3(chain: ChainConfig, timeout: int = 20) -> Web3:
     """Build a Web3 client for the given chain config.
 
     Verifies that the configured RPC actually serves the expected chainId.
+    Wraps any HTTP / network / JSON-RPC error during the handshake in
+    `RpcConnectError` so callers don't need to know about requests/web3
+    internals.
     """
     w3 = Web3(HTTPProvider(chain.rpc_url, request_kwargs={"timeout": timeout}))
-    actual = w3.eth.chain_id
+    try:
+        actual = w3.eth.chain_id
+    except HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        raise RpcConnectError(
+            f"RPC {chain.rpc_url} returned HTTP {status}: "
+            f"{str(e.response.text)[:200] if e.response is not None else e}"
+        ) from e
+    except (RequestsConnectionError, Timeout) as e:
+        raise RpcConnectError(
+            f"failed to reach RPC {chain.rpc_url}: {type(e).__name__}: {e}"
+        ) from e
+    except Web3RPCError as e:
+        raise RpcConnectError(
+            f"RPC {chain.rpc_url} rejected chainId query: {e}"
+        ) from e
+
     if actual != chain.chain_id:
-        raise RuntimeError(
+        raise RpcConnectError(
             f"RPC chainId mismatch: config says {chain.chain_id} ({chain.name}), "
-            f"endpoint reports {actual}"
+            f"endpoint reports {actual}. Likely wrong rpc_url for this chain."
         )
     return w3
 
