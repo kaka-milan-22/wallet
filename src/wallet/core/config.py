@@ -58,6 +58,60 @@ _BUILTIN_PRESETS: dict[str, dict] = {
 
 _DATA_HOME_ENV_VARS = ("WALLET_HOME", "WALLET_DATA_DIR")
 
+# Files in `data_root()` that hold private state. Listed once here so the
+# tightening pass below stays the single source of truth for which paths
+# need 0o600 — adding a new sensitive file means adding one line.
+_SENSITIVE_FILES = (
+    "state.json",
+    "policy.json",
+    "idempotency.json",
+    "audit.log",
+    "chains.json",  # may embed API keys in rpc_url
+)
+
+# Per-path memo so the tightening pass runs once per (process, dir), even
+# though `data_root()` is called dozens of times per command. We key on
+# the resolved Path so `WALLET_HOME` swaps in tests still get re-tightened.
+_TIGHTENED_ROOTS: set[Path] = set()
+
+
+def _tighten_data_root(p: Path) -> None:
+    """Defense-in-depth pass over an existing data dir.
+
+    Two failures we're correcting:
+      1. `mkdir` honours umask, so a fresh install on macOS gets a 0o755
+         dir other local users can `ls`. Force 0o700.
+      2. Pre-existing files written by an older wallet (or hand-edited via
+         `vi`) inherit the editor's umask and end up 0o644. The atomic
+         writer tightens on every write — but a user who only *reads* the
+         policy / audit log never triggers it. This catches them on the
+         first `data_root()` call of the session.
+
+    All operations are best-effort: chmod failures (read-only FS, foreign
+    UID on a shared mount) are swallowed because the alternative is
+    crashing every command. We log to stderr only under `--debug`.
+    """
+    try:
+        p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        return
+    try:
+        if (os.stat(p).st_mode & 0o077) != 0:
+            os.chmod(p, 0o700)
+    except OSError:
+        pass
+    for name in _SENSITIVE_FILES:
+        f = p / name
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if (st.st_mode & 0o077) != 0:
+            try:
+                os.chmod(f, 0o600)
+            except OSError:
+                pass
+
 
 def data_root() -> Path:
     """Resolve the base directory for all wallet runtime state (chains.json,
@@ -71,12 +125,22 @@ def data_root() -> Path:
     Lets you isolate per-test / per-container / per-account state without
     polluting the user's real config. Required for CI parallelism too —
     multiple test processes would otherwise step on each other's state.
+
+    On first call per directory, runs `_tighten_data_root` so existing
+    installs get migrated to 0o700 dir + 0o600 files without waiting for
+    the next write.
     """
     for env in _DATA_HOME_ENV_VARS:
         v = os.environ.get(env)
         if v:
-            return Path(v).expanduser()
-    return Path(user_data_dir("wallet", appauthor=False))
+            p = Path(v).expanduser()
+            break
+    else:
+        p = Path(user_data_dir("wallet", appauthor=False))
+    if p not in _TIGHTENED_ROOTS:
+        _tighten_data_root(p)
+        _TIGHTENED_ROOTS.add(p)
+    return p
 
 
 def chains_config_path() -> Path:

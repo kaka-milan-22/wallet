@@ -13,7 +13,14 @@ from dataclasses import dataclass, field
 from eth_account import Account
 from eth_account.hdaccount import ValidationError as _MnemonicValidationError
 
-__all__ = ["DerivedAccount", "default_path", "derive", "generate_mnemonic", "is_valid_mnemonic"]
+__all__ = [
+    "DerivedAccount",
+    "MnemonicError",
+    "default_path",
+    "derive",
+    "generate_mnemonic",
+    "is_valid_mnemonic",
+]
 
 # Required since eth-account 0.5.0; the feature is stable but not formally audited.
 Account.enable_unaudited_hdwallet_features()
@@ -42,14 +49,39 @@ def generate_mnemonic() -> str:
     return mnemonic
 
 
+class MnemonicError(ValueError):
+    """Raised when `derive` cannot turn a phrase into an account.
+
+    Carries NO mnemonic-derived data in its message — critical because
+    `eth_account.from_mnemonic`'s own `ValidationError` includes the
+    original phrase verbatim (e.g. `"Language not detected for word(s):
+    legal winner thank year wave ..."`). Any caller that catches that
+    raw exception and formats `str(e)` into a log line / audit row / JSON
+    error envelope leaks the phrase to disk and to the agent's context.
+
+    We catch the leaky exception at the boundary and re-raise this
+    sanitized variant with `from None`, suppressing the original
+    chain so traceback walkers (sentry, structlog, ``--tb=long``)
+    don't surface the inner ``__cause__`` either.
+    """
+
+
 def derive(mnemonic: str, index: int = 0, path: str | None = None) -> DerivedAccount:
     """Derive an Ethereum account from `mnemonic` at the given index or full path.
 
     Either `index` (using the default Ethereum BIP-44 path) or an explicit `path`
     must be provided; if both are given, `path` wins.
+
+    Raises `MnemonicError` (never the upstream `ValidationError`) so the
+    phrase cannot escape via an exception message — see `MnemonicError`.
     """
     p = path or default_path(index)
-    acct = Account.from_mnemonic(mnemonic, account_path=p)
+    try:
+        acct = Account.from_mnemonic(mnemonic, account_path=p)
+    except (_MnemonicValidationError, ValueError) as e:
+        # `from None` deliberately drops the original exception chain
+        # because its `args` contains the verbatim mnemonic.
+        raise MnemonicError(f"invalid mnemonic ({type(e).__name__})") from None
     return DerivedAccount(address=acct.address, path=p, private_key=bytes(acct.key))
 
 
