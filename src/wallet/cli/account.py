@@ -238,14 +238,26 @@ def derive(
 
     try:
         mnemonic = vault.reveal(src.vault_key)
-        try:
-            derived_acct = hd.derive(mnemonic, index=index)
-        finally:
-            del mnemonic
     except Exception as e:
+        # vault errors never carry mnemonic data — safe to surface `str(e)`.
         emit_error("vault_error", command="account.derive",
                    reason=f"{type(e).__name__}: {e}")
         raise typer.Exit(code=1)
+
+    try:
+        derived_acct = hd.derive(mnemonic, index=index)
+    except hd.MnemonicError as e:
+        # `MnemonicError.__str__` is pre-sanitized by `hd.derive`; this
+        # branch exists to make it explicit that even if someone widens
+        # the except to `Exception`, the leaky `ValidationError` from
+        # eth_account is already converted at the boundary.
+        emit_error("vault_error", command="account.derive", reason=str(e))
+        raise typer.Exit(code=1)
+    finally:
+        try:
+            del mnemonic
+        except NameError:
+            pass
 
     state.accounts.append(
         AccountEntry(

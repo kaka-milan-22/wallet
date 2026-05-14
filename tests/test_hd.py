@@ -5,7 +5,16 @@ documented and reproduced across most Ethereum tooling — they are de-facto
 test vectors.
 """
 
-from wallet.core.hd import default_path, derive, generate_mnemonic, is_valid_mnemonic
+import pytest
+
+from wallet.core.hd import (
+    DerivedAccount,
+    MnemonicError,
+    default_path,
+    derive,
+    generate_mnemonic,
+    is_valid_mnemonic,
+)
 
 HARDHAT_MNEMONIC = "test test test test test test test test test test test junk"
 
@@ -58,3 +67,55 @@ def test_generate_mnemonic_is_valid_and_distinct():
     assert a != b  # cryptographically vanishing collision probability
     assert is_valid_mnemonic(a)
     assert is_valid_mnemonic(b)
+
+
+# --- security: derive must never leak the mnemonic via exceptions -----------
+
+
+_LEAKY_PHRASES = [
+    # Real BIP-39 words but corrupted in ways that drive eth_account into the
+    # "Language not detected for word(s): <verbatim phrase>" code path.
+    "legalwinner thank year wave sausage worth useful legal winner thank yellow",
+    "foo bar baz",
+    "legal winner thank year wave sausage worth useful legal winner thank XXXXX",
+    # Exact length, single typo (off-by-one letter) — the most realistic
+    # user-facing case
+    "legal wnner thank year wave sausage worth useful legal winner thank yellow",
+]
+
+
+@pytest.mark.parametrize("phrase", _LEAKY_PHRASES)
+def test_derive_never_includes_mnemonic_in_exception_message(phrase: str):
+    """eth_account 0.13's `ValidationError` puts the raw mnemonic into
+    `str(e)` whenever any word fails wordlist lookup. If `hd.derive`
+    propagates that exception, the wallet's audit log / JSON envelope /
+    stderr all leak the phrase.
+
+    Acceptance: derive must raise `MnemonicError`, and its string form
+    must not contain any user-supplied word. Also the exception chain
+    (`__cause__` / `__context__`) must be cleared so traceback walkers
+    don't surface the original args."""
+    with pytest.raises(MnemonicError) as ei:
+        derive(phrase, index=0)
+
+    msg = str(ei.value)
+    for word in phrase.split():
+        if len(word) > 3:  # skip ultra-short tokens that may coincide with type names
+            assert word not in msg, (
+                f"mnemonic word {word!r} leaked into MnemonicError message: {msg!r}"
+            )
+
+    # The chain must be suppressed — `raise ... from None` clears __cause__
+    # but Python still sets __context__ to the in-flight exception. We
+    # verify __cause__ is None and __suppress_context__ is True (which is
+    # what `from None` produces).
+    assert ei.value.__cause__ is None
+    assert ei.value.__suppress_context__ is True
+
+
+def test_derive_propagates_valid_mnemonic_normally():
+    """The sanitization must not break the happy path — a valid phrase
+    still derives correctly with no exception."""
+    a = derive(HARDHAT_MNEMONIC, index=0)
+    assert isinstance(a, DerivedAccount)
+    assert a.address == HARDHAT_ADDRESSES[0]

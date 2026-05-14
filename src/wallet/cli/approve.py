@@ -99,7 +99,7 @@ def show(
         raise typer.Exit(code=2)
 
     try:
-        owner_addr = resolve_address(state, owner) if owner else _sender(state, None).address
+        owner_addr = resolve_address(state, owner) if owner else resolve_account(state, None).address
         spender_addr = resolve_address(state, spender)
     except typer.BadParameter as e:
         emit_error("validation_error", command="approve.show", chain=cfg.name, reason=str(e))
