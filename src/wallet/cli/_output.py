@@ -38,6 +38,11 @@ class OutputMode:
     json: bool = os.environ.get("WALLET_JSON") == "1"
     quiet: bool = os.environ.get("WALLET_QUIET") == "1"
     explain: bool = os.environ.get("WALLET_EXPLAIN") == "1"
+    # Verbose RPC tracing. Distinct from `explain` (policy/idempotency decisions):
+    # `debug` dumps every HTTP request and response to/from the configured RPC,
+    # which is what you actually need when "balance is wrong" or "swap router
+    # quoter returned zeroes" — neither of those routes through `explain`.
+    debug: bool = os.environ.get("WALLET_DEBUG") == "1"
 
 
 # Construct Console lazily inside each call. Eagerly-cached `Console(file=sys.stdout)`
@@ -114,8 +119,17 @@ def explain(msg: str) -> None:
     stderr_console().print(f"[dim]\\[explain][/dim] {msg}")
 
 
+def debug(msg: str) -> None:
+    """Verbose RPC / internals trace. Only emitted when --debug is on; always
+    stderr (so JSON stdout pipelines remain clean). Cheap when disabled."""
+    if not OutputMode.debug:
+        return
+    stderr_console().print(f"[dim]\\[debug][/dim] {msg}")
+
+
 def reset_for_test() -> None:
     """Restore env-driven defaults — used by the test suite to isolate cases."""
     OutputMode.json = os.environ.get("WALLET_JSON") == "1"
     OutputMode.quiet = os.environ.get("WALLET_QUIET") == "1"
     OutputMode.explain = os.environ.get("WALLET_EXPLAIN") == "1"
+    OutputMode.debug = os.environ.get("WALLET_DEBUG") == "1"

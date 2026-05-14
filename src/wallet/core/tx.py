@@ -16,6 +16,14 @@ from web3.exceptions import ContractLogicError
 from wallet.core.config import ChainConfig
 from wallet.core.tokens import ERC20_ABI
 
+__all__ = [
+    "MIN_PRIORITY_GWEI",
+    "PreparedTx",
+    "broadcast",
+    "prepare_erc20_approve",
+    "prepare_erc20_transfer",
+    "prepare_native_transfer",
+]
 
 MIN_PRIORITY_GWEI = 1  # floor below which we round up; Sepolia public RPC sometimes returns 0
 
@@ -58,15 +66,25 @@ def _simulate(w3: Web3, tx: dict[str, Any]) -> None:
 
 
 def _common_fields(w3: Web3, chain: ChainConfig, sender: str) -> dict[str, Any]:
+    # Note: nonce is intentionally NOT set here. We defer it to signing time
+    # (see confirm_and_broadcast) so that the gap between dry-run and broadcast,
+    # or between policy prompt and confirmation, can't ship a stale nonce
+    # because another tx from the same account landed in between.
     priority, max_fee = _fees(w3)
     return {
         "from": Web3.to_checksum_address(sender),
-        "nonce": w3.eth.get_transaction_count(Web3.to_checksum_address(sender)),
         "chainId": chain.chain_id,
         "type": 2,
         "maxFeePerGas": max_fee,
         "maxPriorityFeePerGas": priority,
     }
+
+
+def _strip_nonce(tx: dict[str, Any]) -> dict[str, Any]:
+    """`Contract.build_transaction(base)` auto-fills nonce when it isn't in
+    `base`. We want it absent until confirm_and_broadcast refreshes it."""
+    tx.pop("nonce", None)
+    return tx
 
 
 def prepare_native_transfer(
@@ -81,6 +99,7 @@ def prepare_native_transfer(
     tx["value"] = amount_wei
     tx["gas"] = w3.eth.estimate_gas(tx)
     _simulate(w3, tx)
+    _strip_nonce(tx)
     fee = tx["maxFeePerGas"] * tx["gas"]
     return PreparedTx(
         tx=tx,
@@ -114,6 +133,7 @@ def prepare_erc20_transfer(
         Web3.to_checksum_address(recipient), amount
     ).build_transaction(base)
     _simulate(w3, tx)
+    _strip_nonce(tx)
     fee = tx["maxFeePerGas"] * tx["gas"]
     return PreparedTx(
         tx=tx,
@@ -148,6 +168,7 @@ def prepare_erc20_approve(
         Web3.to_checksum_address(spender), amount
     ).build_transaction(base)
     _simulate(w3, tx)
+    _strip_nonce(tx)
     fee = tx["maxFeePerGas"] * tx["gas"]
     return PreparedTx(
         tx=tx,

@@ -3,7 +3,12 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
-from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit, resolve_address
+from wallet.cli._common import (
+    confirm_and_broadcast,
+    make_web3_or_exit,
+    resolve_account,
+    resolve_address,
+)
 from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, parse_units
@@ -12,18 +17,6 @@ from wallet.core.tx import prepare_erc20_approve
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="ERC-20 approval management")
-
-
-def _sender(state, account: str | None):
-    if account:
-        a = state.find_account(account)
-        if not a:
-            raise typer.BadParameter(f"unknown account: {account}")
-        return a
-    a = state.get_default_account()
-    if not a:
-        raise typer.BadParameter("no default account")
-    return a
 
 
 @app.command("set")
@@ -45,7 +38,7 @@ def set_allowance(
     w3 = make_web3_or_exit(cfg, command="approve")
 
     try:
-        sender = _sender(state, account)
+        sender = resolve_account(state, account)
         spender_addr = resolve_address(state, spender)
     except typer.BadParameter as e:
         emit_error("validation_error", command="approve", chain=cfg.name, reason=str(e))
@@ -163,7 +156,7 @@ def revoke(
     w3 = make_web3_or_exit(cfg, command="approve")
 
     try:
-        sender = _sender(state, account)
+        sender = resolve_account(state, account)
         spender_addr = resolve_address(state, spender)
     except typer.BadParameter as e:
         emit_error("validation_error", command="revoke", chain=cfg.name, reason=str(e))

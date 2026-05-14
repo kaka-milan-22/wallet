@@ -36,6 +36,26 @@ def make_web3_or_exit(chain: ChainConfig, *, command: str):
         raise typer.Exit(code=1)
 
 
+def resolve_account(state: WalletState, account: str | None):
+    """Resolve the sending account from `--account <name>` or default.
+
+    Centralizes what every send / approve / swap / aave / portfolio command
+    used to inline (`find_account` or `get_default_account` + the same two
+    error strings). Raises `typer.BadParameter` so callers can convert it to
+    a `validation_error` envelope uniformly."""
+    if account:
+        a = state.find_account(account)
+        if not a:
+            raise typer.BadParameter(f"unknown account: {account}")
+        return a
+    a = state.get_default_account()
+    if not a:
+        raise typer.BadParameter(
+            "no default account — run `wallet account use <name>`"
+        )
+    return a
+
+
 def resolve_address(state: WalletState, query: str) -> str:
     """Resolve `0x...`, `@alias`, or bare name to a checksummed address."""
     q = query.strip()
@@ -69,51 +89,72 @@ def _label_for(state: WalletState, address: str) -> str:
     return ""
 
 
-def _category(prepared: PreparedTx) -> str:
-    """Classify into the high-level command name used in audit + JSON envelope."""
+# Single source of truth for classifying a prepared tx.
+#
+# `description["kind"]` is the free-form label set by each prepare_* helper
+# (e.g. "USDC approve", "native transfer", "aave supply"). _classify maps it to:
+#   - category: high-level command name surfaced to audit + policy ("approve", "send", …)
+#   - kind:     stable machine-readable ID for the JSON envelope ("erc20_approve", "native_transfer", …)
+# Adding a new tx type means adding one row here, not editing two parallel ladders.
+_CLASSIFY_TABLE: tuple[tuple[str, str, str, str], ...] = (
+    # (match_mode, needle, category, machine_kind)
+    ("exact", "swap",            "swap",          "swap"),
+    ("exact", "aave supply",     "aave_supply",   "aave_supply"),
+    ("exact", "aave withdraw",   "aave_withdraw", "aave_withdraw"),
+    ("exact", "aave faucet",     "aave_faucet",   "aave_faucet"),
+    ("exact", "aave borrow",     "aave_borrow",   "aave_borrow"),
+    ("exact", "aave repay",      "aave_repay",    "aave_repay"),
+    ("exact", "native transfer", "send",          "native_transfer"),
+    ("contains", "approve",      "approve",       "erc20_approve"),
+    ("contains", "transfer",     "send",          "erc20_transfer"),
+)
+
+
+def _classify(prepared: PreparedTx, *, as_category: bool) -> str:
     kind = prepared.description.get("kind", "")
-    if kind == "swap":
-        return "swap"
-    if kind == "aave supply":
-        return "aave_supply"
-    if kind == "aave withdraw":
-        return "aave_withdraw"
-    if kind == "aave faucet":
-        return "aave_faucet"
-    if kind == "aave borrow":
-        return "aave_borrow"
-    if kind == "aave repay":
-        return "aave_repay"
-    if "approve" in kind:
-        return "approve"
-    if "transfer" in kind:
-        return "send"
+    for mode, needle, category, machine in _CLASSIFY_TABLE:
+        hit = kind == needle if mode == "exact" else needle in kind
+        if hit:
+            return category if as_category else machine
     return "unknown"
+
+
+def _category(prepared: PreparedTx) -> str:
+    """High-level command name for audit / policy ('approve' / 'send' / 'swap' / 'aave_*')."""
+    return _classify(prepared, as_category=True)
 
 
 def _kind_machine(prepared: PreparedTx) -> str:
-    """Stable machine-readable kind: native_transfer / erc20_transfer / erc20_approve / swap / aave_*."""
+    """Stable machine-readable kind for the JSON envelope (erc20_approve / native_transfer / …)."""
+    return _classify(prepared, as_category=False)
+
+
+def _warnings_for(prepared: PreparedTx) -> list[dict]:
+    """Per-tx soft warnings surfaced to both rich preview and JSON envelope.
+
+    These run regardless of policy — they fire even when `deny_unlimited_approve`
+    is False or `policy_bypass=True`, so the user / agent always sees the risk.
+    Policy still has the final say on block-vs-allow; warnings are advisory.
+    """
+    from wallet.core.tokens import MAX_UINT256
+
+    warnings: list[dict] = []
     desc = prepared.description
-    kind_raw = desc.get("kind", "")
-    if kind_raw == "swap":
-        return "swap"
-    if kind_raw == "aave supply":
-        return "aave_supply"
-    if kind_raw == "aave withdraw":
-        return "aave_withdraw"
-    if kind_raw == "aave faucet":
-        return "aave_faucet"
-    if kind_raw == "aave borrow":
-        return "aave_borrow"
-    if kind_raw == "aave repay":
-        return "aave_repay"
-    if kind_raw == "native transfer":
-        return "native_transfer"
-    if "approve" in kind_raw:
-        return "erc20_approve"
-    if "transfer" in kind_raw:
-        return "erc20_transfer"
-    return "unknown"
+    kind = desc.get("kind", "")
+    amount = int(desc.get("amount_wei", 0))
+
+    if "approve" in kind and amount == MAX_UINT256:
+        spender = desc.get("spender", "?")
+        token = desc.get("amount_unit", "token")
+        warnings.append({
+            "code": "unlimited_approve",
+            "severity": "high",
+            "message": (
+                f"Unlimited approval — spender {spender} can drain your entire "
+                f"{token} balance, now and in the future. Prefer an exact amount."
+            ),
+        })
+    return warnings
 
 
 def _build_data(
@@ -136,7 +177,7 @@ def _build_data(
         "amount": format_units(int(desc.get("amount_wei", 0)), int(desc.get("amount_decimals", 18))),
         "unit": desc.get("amount_unit"),
         "decimals": desc.get("amount_decimals"),
-        "nonce": tx.get("nonce"),
+        "nonce": tx.get("nonce", "fresh-at-sign-time"),
         "gas": tx.get("gas"),
         "max_fee_per_gas_wei": str(tx.get("maxFeePerGas")),
         "max_priority_fee_per_gas_wei": str(tx.get("maxPriorityFeePerGas")),
@@ -182,6 +223,9 @@ def _build_data(
             label = _label_for(state, desc["spender"])
             if label:
                 payload["spender_label"] = label
+    warnings = _warnings_for(prepared)
+    if warnings:
+        payload["warnings"] = warnings
     if extra:
         payload.update(extra)
     return payload
@@ -248,13 +292,28 @@ def _render_preview(state: WalletState, chain: ChainConfig):
             if d.get("aave_repay_max"):
                 table.add_row("repay mode", "[bold]max (full variable debt)[/bold]")
 
-        table.add_row("nonce", str(d.get("nonce")))
+        nonce_disp = d.get("nonce")
+        table.add_row(
+            "nonce",
+            "[dim]fresh at sign-time[/dim]" if nonce_disp == "fresh-at-sign-time"
+            else str(nonce_disp),
+        )
         table.add_row("gas limit", str(d.get("gas")))
         table.add_row("max fee / gas", f"{format_units(int(d['max_fee_per_gas_wei']), 9)} gwei")
         table.add_row("priority fee", f"{format_units(int(d['max_priority_fee_per_gas_wei']), 9)} gwei")
         table.add_row("est. fee", f"{d['estimated_fee']} {chain.native_symbol}")
 
         stdout_console().print(Panel(table, title="transaction preview", border_style="cyan"))
+
+        for w in d.get("warnings", []):
+            sev = w.get("severity", "warn").upper()
+            stdout_console().print(
+                Panel(
+                    f"[bold red]{sev}:[/bold red] {w.get('message', '')}",
+                    title=f"⚠ {w.get('code', 'warning')}",
+                    border_style="red",
+                )
+            )
     return render
 
 
@@ -438,6 +497,26 @@ def confirm_and_broadcast(
             raise typer.Exit(code=1)
 
     # --- sign + broadcast ---
+    # Refresh nonce *here*, not at prepare time. Any time between dry-run /
+    # preview / policy prompt and the actual broadcast another tx from the same
+    # account could have landed (e.g. an idempotent retry that did make it),
+    # which would make a baked-in nonce stale. Reading from "pending" includes
+    # already-submitted-but-unmined txs in our own mempool slot, so successive
+    # broadcasts in the same script work too.
+    try:
+        prepared.tx["nonce"] = w3.eth.get_transaction_count(
+            Web3.to_checksum_address(prepared.tx["from"]), "pending"
+        )
+    except Exception as e:
+        _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+        emit_error(
+            "rpc_error",
+            command=cmd, chain=chain.name,
+            reason=f"failed to refresh nonce: {type(e).__name__}: {e}",
+        )
+        raise typer.Exit(code=1) from None
+    explain(f"nonce refreshed at sign-time → {prepared.tx['nonce']}")
+
     try:
         raw = sign_transaction(sender_account, prepared.tx)
         tx_hash = broadcast(w3, raw)

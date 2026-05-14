@@ -20,10 +20,25 @@ def isolated_audit(tmp_path: Path, monkeypatch):
     return p
 
 
-def test_write_creates_file_with_0644(isolated_audit):
+def test_write_creates_file_with_0600(isolated_audit):
+    """New audit logs are owner-only (0600) — readable only by the wallet user."""
     audit.write({"chain": "sepolia", "kind": "send", "outcome": "broadcast"})
     mode = stat.S_IMODE(os.stat(isolated_audit).st_mode)
-    assert mode == 0o644, f"audit log mode should be 0644, got {oct(mode)}"
+    assert mode == 0o600, f"audit log mode should be 0600, got {oct(mode)}"
+
+
+def test_write_migrates_older_0o644_log(isolated_audit, tmp_path):
+    """If a previous version wrote audit.log at 0o644, the next write should
+    tighten it to 0o600 in place (no manual chmod required)."""
+    # Pre-seed a file at 0o644 mimicking the old version
+    isolated_audit.write_text('{"ts":"2026-01-01T00:00:00Z","kind":"send"}\n')
+    os.chmod(isolated_audit, 0o644)
+    assert stat.S_IMODE(os.stat(isolated_audit).st_mode) == 0o644
+
+    audit.write({"chain": "sepolia", "kind": "send", "outcome": "broadcast"})
+
+    mode = stat.S_IMODE(os.stat(isolated_audit).st_mode)
+    assert mode == 0o600, f"expected migration to 0o600, got {oct(mode)}"
 
 
 def test_write_emits_valid_jsonl(isolated_audit):
@@ -56,7 +71,7 @@ def _writer_proc(audit_path_str: str, marker: str) -> None:
     # Re-import inside the child so `audit_path` rebind via monkeypatch is lost;
     # we have to re-monkeypatch via env so use a simple direct write here.
     path = Path(audit_path_str)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         for i in range(50):
             line = json.dumps({"marker": marker, "i": i}, separators=(",", ":")) + "\n"

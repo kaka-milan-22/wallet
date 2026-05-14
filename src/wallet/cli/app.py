@@ -52,11 +52,25 @@ def _global(
         False, "--explain", envvar="WALLET_EXPLAIN",
         help="Print policy / idempotency decision details to stderr.",
     ),
+    debug: bool = typer.Option(
+        False, "--debug", envvar="WALLET_DEBUG",
+        help="Print verbose RPC request/response traces to stderr.",
+    ),
 ) -> None:
     """Top-level options applied to every subcommand."""
     OutputMode.json = json_output
     OutputMode.quiet = quiet
     OutputMode.explain = explain
+    OutputMode.debug = debug
+
+    if debug:
+        # Lightweight web3 + urllib3 request logging — the cheapest way to see
+        # what the RPC actually got asked and what it answered. Suppressed when
+        # the flag is off so normal runs stay clean.
+        import logging
+        logging.basicConfig(level=logging.WARNING)
+        for name in ("web3.providers.HTTPProvider", "web3.RequestManager", "urllib3.connectionpool"):
+            logging.getLogger(name).setLevel(logging.DEBUG)
 
 
 @app.command()

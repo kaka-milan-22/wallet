@@ -68,6 +68,17 @@ def _chain():
     return chain
 
 
+def _w3(nonce: int = 5):
+    """Minimal w3 mock with the methods confirm_and_broadcast actually uses.
+
+    Critical: `eth.get_transaction_count` must return a real int, not a
+    MagicMock, because the result is stored into `prepared.tx["nonce"]` and
+    later validated by Pydantic in `CachedResult`."""
+    w3 = MagicMock()
+    w3.eth.get_transaction_count.return_value = nonce
+    return w3
+
+
 def _prepared(amount_wei: int, to: str = "0x" + "11" * 20):
     pt = PreparedTx(
         tx={"from": "0x" + "ff" * 20, "to": to, "value": amount_wei,
@@ -105,7 +116,7 @@ def test_agent_without_policy_is_rejected(
 
     with pytest.raises(typer.Exit) as exc:
         confirm_and_broadcast(
-            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            w3=_w3(), state=WalletState(), chain=_chain(),
             sender_account=MagicMock(), prepared=pt,
             dry_run=False, yes=True,
         )
@@ -134,7 +145,7 @@ def test_agent_with_policy_without_request_id_rejected(
 
     with pytest.raises(typer.Exit) as exc:
         confirm_and_broadcast(
-            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            w3=_w3(), state=WalletState(), chain=_chain(),
             sender_account=MagicMock(), prepared=pt,
             dry_run=False, yes=True,
         )
@@ -161,7 +172,7 @@ def test_agent_full_compliant_broadcasts(
     pt = _prepared(amount_wei=10**15, to=addr)
 
     confirm_and_broadcast(
-        w3=MagicMock(), state=WalletState(), chain=_chain(),
+        w3=_w3(), state=WalletState(), chain=_chain(),
         sender_account=MagicMock(), prepared=pt,
         dry_run=False, yes=True, request_id="req-aaa-001",
     )
@@ -187,7 +198,7 @@ def test_idempotent_replay(
     pt = _prepared(amount_wei=10**15, to=addr)
 
     confirm_and_broadcast(
-        w3=MagicMock(), state=WalletState(), chain=_chain(),
+        w3=_w3(), state=WalletState(), chain=_chain(),
         sender_account=MagicMock(), prepared=pt,
         dry_run=False, yes=True, request_id="req-replay-001",
     )
@@ -195,7 +206,7 @@ def test_idempotent_replay(
 
     # Second call with same request_id, same params — must replay, not re-sign
     confirm_and_broadcast(
-        w3=MagicMock(), state=WalletState(), chain=_chain(),
+        w3=_w3(), state=WalletState(), chain=_chain(),
         sender_account=MagicMock(), prepared=pt,
         dry_run=False, yes=True, request_id="req-replay-001",
     )
@@ -223,7 +234,7 @@ def test_per_tx_cap_blocks_with_audit(
 
     with pytest.raises(typer.Exit) as exc:
         confirm_and_broadcast(
-            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            w3=_w3(), state=WalletState(), chain=_chain(),
             sender_account=MagicMock(), prepared=pt,
             dry_run=False, yes=True, request_id="req-overcap-001",
         )
@@ -245,7 +256,7 @@ def test_tty_bypass_allows(isolated_dirs, force_caller_tty, mock_signing):
     pt = _prepared(amount_wei=10**18)  # over cap
 
     confirm_and_broadcast(
-        w3=MagicMock(), state=WalletState(), chain=_chain(),
+        w3=_w3(), state=WalletState(), chain=_chain(),
         sender_account=MagicMock(), prepared=pt,
         dry_run=False, yes=True, policy_bypass=True,
     )
@@ -261,7 +272,7 @@ def test_agent_bypass_refused(isolated_dirs, force_caller_agent, mock_signing):
 
     with pytest.raises(typer.Exit):
         confirm_and_broadcast(
-            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            w3=_w3(), state=WalletState(), chain=_chain(),
             sender_account=MagicMock(), prepared=pt,
             dry_run=False, yes=True, policy_bypass=True,
             request_id="req-bypass-attempt",
@@ -288,7 +299,7 @@ def test_json_broadcast_emits_success_envelope(
     monkeypatch.setattr(OutputMode, "json", True)
     try:
         confirm_and_broadcast(
-            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            w3=_w3(), state=WalletState(), chain=_chain(),
             sender_account=MagicMock(), prepared=pt,
             dry_run=False, yes=True, request_id="req-json-001",
         )
@@ -324,7 +335,7 @@ def test_json_policy_block_emits_error_envelope(
     try:
         with pytest.raises(typer.Exit):
             confirm_and_broadcast(
-                w3=MagicMock(), state=WalletState(), chain=_chain(),
+                w3=_w3(), state=WalletState(), chain=_chain(),
                 sender_account=MagicMock(), prepared=pt,
                 dry_run=False, yes=True, request_id="req-blocked",
             )
@@ -359,7 +370,7 @@ def test_json_without_yes_triggers_confirmation_required(
     try:
         with pytest.raises(typer.Exit) as exc:
             confirm_and_broadcast(
-                w3=MagicMock(), state=WalletState(), chain=_chain(),
+                w3=_w3(), state=WalletState(), chain=_chain(),
                 sender_account=MagicMock(), prepared=pt,
                 dry_run=False, yes=False, request_id="req-needs-yes",
             )
@@ -389,7 +400,7 @@ def test_json_idempotent_replay_envelope(
 
     # First call: real broadcast
     confirm_and_broadcast(
-        w3=MagicMock(), state=WalletState(), chain=_chain(),
+        w3=_w3(), state=WalletState(), chain=_chain(),
         sender_account=MagicMock(), prepared=pt,
         dry_run=False, yes=True, request_id="req-replay-json",
     )
@@ -399,7 +410,7 @@ def test_json_idempotent_replay_envelope(
     monkeypatch.setattr(OutputMode, "json", True)
     try:
         confirm_and_broadcast(
-            w3=MagicMock(), state=WalletState(), chain=_chain(),
+            w3=_w3(), state=WalletState(), chain=_chain(),
             sender_account=MagicMock(), prepared=pt,
             dry_run=False, yes=True, request_id="req-replay-json",
         )
@@ -412,3 +423,71 @@ def test_json_idempotent_replay_envelope(
     assert obj["data"]["outcome"] == "replayed_idempotent"
     assert "tx_hash" in obj["data"]
     assert "original_created_at" in obj["data"]
+
+
+# --- 11. Nonce is refreshed at sign-time, not baked at prepare-time ----------
+
+
+def test_nonce_refreshed_just_before_signing(
+    isolated_dirs, force_caller_agent, mock_signing, monkeypatch
+):
+    """Tier 1.1 contract: even if a stale nonce was sitting on prepared.tx,
+    confirm_and_broadcast must overwrite it with `eth_getTransactionCount(...,
+    'pending')` right before sign_transaction. Concurrent sends would
+    otherwise silently collide.
+    """
+    addr = "0x" + "11" * 20
+    save_policy(Policy(
+        max_per_tx={"ETH": "0.1"},
+        recipient_allowlist=[addr],
+        first_send_warn=False,
+    ))
+    pt = _prepared(amount_wei=10**15, to=addr)
+    pt.tx.pop("nonce", None)  # mirror prepare_native_transfer's post-_strip_nonce shape
+
+    captured = {}
+
+    def capturing_sign(_account, tx):
+        captured["nonce_at_sign"] = tx.get("nonce")
+        return b"\x00" * 100
+
+    monkeypatch.setattr(_common, "sign_transaction", capturing_sign)
+
+    w3 = _w3(nonce=99)
+    confirm_and_broadcast(
+        w3=w3, state=WalletState(), chain=_chain(),
+        sender_account=MagicMock(), prepared=pt,
+        dry_run=False, yes=True, request_id="req-nonce-refresh",
+    )
+
+    assert captured["nonce_at_sign"] == 99, "must refresh nonce right before signing"
+    w3.eth.get_transaction_count.assert_called_once()
+    # The refresh call must use pending so own-mempool txs are counted
+    args, kwargs = w3.eth.get_transaction_count.call_args
+    assert "pending" in args or kwargs.get("block_identifier") == "pending"
+
+
+def test_nonce_refresh_rpc_failure_is_rpc_error_not_traceback(
+    isolated_dirs, force_caller_agent, mock_signing
+):
+    """If the nonce-refresh RPC hops blow up, surface as `rpc_error` envelope —
+    not a raw traceback. (No partial state: no broadcast happens.)"""
+    addr = "0x" + "11" * 20
+    save_policy(Policy(
+        max_per_tx={"ETH": "0.1"},
+        recipient_allowlist=[addr],
+        first_send_warn=False,
+    ))
+    pt = _prepared(amount_wei=10**15, to=addr)
+
+    w3 = _w3()
+    w3.eth.get_transaction_count.side_effect = RuntimeError("RPC 503")
+
+    with pytest.raises(typer.Exit) as exc:
+        confirm_and_broadcast(
+            w3=w3, state=WalletState(), chain=_chain(),
+            sender_account=MagicMock(), prepared=pt,
+            dry_run=False, yes=True, request_id="req-rpc-fail",
+        )
+    assert exc.value.exit_code == 1
+    assert mock_signing["n"] == 0  # nothing got broadcast

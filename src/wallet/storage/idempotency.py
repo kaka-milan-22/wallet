@@ -13,12 +13,22 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from platformdirs import user_data_dir
+from wallet.core.config import atomic_write_text, data_root
 from pydantic import BaseModel
+
+__all__ = [
+    "CachedResult",
+    "DEFAULT_TTL_HOURS",
+    "IdempotencyMismatch",
+    "fingerprint",
+    "lookup",
+    "record",
+    "store_path",
+    "sweep_expired",
+]
 
 DEFAULT_TTL_HOURS = 24
 
@@ -39,7 +49,7 @@ class CachedResult(BaseModel):
 
 
 def store_path() -> Path:
-    return Path(user_data_dir("wallet", appauthor=False)) / "idempotency.json"
+    return data_root() / "idempotency.json"
 
 
 def _load() -> dict[str, dict]:
@@ -53,12 +63,7 @@ def _load() -> dict[str, dict]:
 
 
 def _save(data: dict[str, dict]) -> None:
-    p = store_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    os.chmod(tmp, 0o600)
-    tmp.replace(p)
+    atomic_write_text(store_path(), json.dumps(data, indent=2, sort_keys=True))
 
 
 def fingerprint(prepared, chain) -> str:

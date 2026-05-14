@@ -76,13 +76,37 @@ def erc20(w3: Web3, address: str) -> Contract:
     return w3.eth.contract(address=Web3.to_checksum_address(address), abi=ERC20_ABI)
 
 
+# Per-(chain_id, address) cache. ERC-20 symbol/decimals are immutable on-chain,
+# so safe to memoize for the process lifetime. Bounds the long tail of token
+# lookups in `portfolio` / `swap` / `resolve_token` to one round-trip per token
+# instead of one per command.
+_TOKEN_INFO_CACHE: dict[tuple[int, str], TokenInfo] = {}
+
+
 def fetch_token_info(w3: Web3, address: str) -> TokenInfo:
+    cs = Web3.to_checksum_address(address)
+    try:
+        chain_id = int(w3.eth.chain_id)
+    except Exception:
+        chain_id = 0  # untrusted mock / disconnected w3 — skip cache
+    key = (chain_id, cs.lower())
+    if chain_id and key in _TOKEN_INFO_CACHE:
+        return _TOKEN_INFO_CACHE[key]
+
     c = erc20(w3, address)
-    return TokenInfo(
+    info = TokenInfo(
         symbol=c.functions.symbol().call(),
-        address=Web3.to_checksum_address(address),
+        address=cs,
         decimals=c.functions.decimals().call(),
     )
+    if chain_id:
+        _TOKEN_INFO_CACHE[key] = info
+    return info
+
+
+def clear_token_info_cache() -> None:
+    """Test hook — wipe the process-wide cache so each case starts fresh."""
+    _TOKEN_INFO_CACHE.clear()
 
 
 def balance_of(w3: Web3, token_address: str, owner: str) -> int:

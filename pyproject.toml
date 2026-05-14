@@ -4,13 +4,16 @@ version = "0.1.0"
 description = "DeFi CLI wallet — Phase 1 (basics: account, transfer, approve, history)"
 requires-python = ">=3.13"
 dependencies = [
-    "web3>=7.0",
-    "eth-account>=0.13",
-    "typer>=0.12",
-    "rich>=13",
-    "httpx>=0.27",
-    "pydantic>=2",
-    "platformdirs>=4",
+    # Upper bounds pin each dep to the next major. web3.py 8 and pydantic 3
+    # will both ship breaking changes; we'd rather break loudly at install
+    # time than ship a wallet that misparses tx data after a silent upgrade.
+    "web3>=7,<8",
+    "eth-account>=0.13,<1",
+    "typer>=0.12,<1",
+    "rich>=13,<16",
+    "httpx>=0.27,<1",
+    "pydantic>=2,<3",
+    "platformdirs>=4,<5",
 ]
 
 [project.scripts]

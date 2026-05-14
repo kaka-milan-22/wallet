@@ -17,7 +17,7 @@ from web3 import Web3
 
 from wallet.core.config import ChainConfig
 from wallet.core.tokens import TokenInfo, allowance
-from wallet.core.tx import PreparedTx, _common_fields, _simulate
+from wallet.core.tx import PreparedTx, _common_fields, _simulate, _strip_nonce
 from wallet.protocols.routes.base import RouteProvider
 
 
@@ -86,6 +86,7 @@ def prepare_swap(
     }
     tx["gas"] = w3.eth.estimate_gas(tx)
     _simulate(w3, tx)
+    _strip_nonce(tx)
     fee_wei = tx["maxFeePerGas"] * tx["gas"]
 
     return PreparedTx(
