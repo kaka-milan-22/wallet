@@ -31,8 +31,23 @@ def _api_key() -> str:
 
 def _call(chain: ChainConfig, params: dict[str, Any]) -> Any:
     full = {**params, "chainid": chain.chain_id, "apikey": _api_key()}
-    r = httpx.get(chain.explorer_api_url, params=full, timeout=20)
-    r.raise_for_status()
+    try:
+        r = httpx.get(chain.explorer_api_url, params=full, timeout=20)
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        # `str(e)` and `e.request.url` both contain `apikey=…` as a query
+        # parameter. Surface only the status — never the URL — so the
+        # apikey doesn't end up in `rpc_error.reason` envelopes the agent
+        # reads.
+        raise EtherscanError(
+            f"etherscan returned HTTP {e.response.status_code}"
+        ) from None
+    except httpx.RequestError as e:
+        # Same risk: `httpx.RequestError.__str__` may include the URL.
+        # `e.request.url` is also available; we deliberately discard both.
+        raise EtherscanError(
+            f"etherscan request failed: {type(e).__name__}"
+        ) from None
     data = r.json()
 
     status = data.get("status")

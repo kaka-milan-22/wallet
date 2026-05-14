@@ -12,7 +12,7 @@ from wallet.cli._common import (
     make_web3_or_exit,
     resolve_account,
 )
-from wallet.core.rpc import parse_units
+from wallet.core.rpc import format_units, parse_units
 from wallet.protocols.aave import (
     REPAY_MAX_AMOUNT,
     WITHDRAW_MAX_AMOUNT,
