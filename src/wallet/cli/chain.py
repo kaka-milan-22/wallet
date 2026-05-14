@@ -9,6 +9,7 @@ from rich.table import Table
 from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core import config as _config  # import-by-module so monkeypatch tracks
 from wallet.core.config import _BUILTIN_PRESETS, get_chain
+from wallet.core.rpc import redact_url
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="Inspect available chain configurations")
@@ -42,7 +43,7 @@ def list_() -> None:
         rows.append({
             "name": cfg.name,
             "chain_id": cfg.chain_id,
-            "rpc_url": cfg.rpc_url,
+            "rpc_url": redact_url(cfg.rpc_url),
             "source": "user-override" if name in user else "builtin",
             "default": cfg.name == state.default_chain,
         })
@@ -58,7 +59,7 @@ def list_() -> None:
         rows.append({
             "name": cfg.name,
             "chain_id": cfg.chain_id,
-            "rpc_url": cfg.rpc_url,
+            "rpc_url": redact_url(cfg.rpc_url),
             "source": "user-added",
             "default": cfg.name == state.default_chain,
         })
@@ -103,11 +104,16 @@ def show(name: str = typer.Argument(..., help="Chain name (e.g. sepolia, ethereu
         emit_error("not_found", command="chain.show", reason=str(e))
         raise typer.Exit(code=1)
 
+    # model_dump exposes the raw rpc_url, which often embeds an API key.
+    # Redact before the dict crosses any agent-visible boundary (JSON
+    # envelope or rich rendering).
+    dumped = cfg.model_dump()
+    dumped["rpc_url"] = redact_url(dumped["rpc_url"])
     data = {
         "ok": True,
         "command": "chain.show",
         "chain": cfg.name,
-        "data": cfg.model_dump(),
+        "data": dumped,
     }
 
     def render(d):

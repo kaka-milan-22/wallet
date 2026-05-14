@@ -68,9 +68,42 @@ def _global(
         # what the RPC actually got asked and what it answered. Suppressed when
         # the flag is off so normal runs stay clean.
         import logging
+        import re
+
+        # urllib3 logs the request line at DEBUG, which contains the full URL
+        # path. When the wallet's chains.json embeds an Alchemy/Infura API key
+        # in the path (`/v2/<KEY>`), every successful request would otherwise
+        # write the key to stderr — and any agent harness that captures stderr
+        # would pull the key into its context. Install a filter that scrubs
+        # credential-shaped path segments + basic-auth userinfo before the
+        # record reaches any handler.
+        _KEY_IN_PATH = re.compile(r"(/v\d+/)([A-Za-z0-9_-]{20,})")
+        _OPAQUE_PATH = re.compile(r"(/)([A-Za-z0-9_-]{32,})(/|$|\s|\")")
+        _BASIC_AUTH = re.compile(r"(https?://)[^:/@\s]+:[^@\s]+@")
+
+        class _CredentialScrubFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                try:
+                    full = record.getMessage()
+                except Exception:
+                    return True
+                scrubbed = _KEY_IN_PATH.sub(r"\1<redacted>", full)
+                scrubbed = _OPAQUE_PATH.sub(r"\1<redacted>\3", scrubbed)
+                scrubbed = _BASIC_AUTH.sub(r"\1<redacted>@", scrubbed)
+                if scrubbed != full:
+                    record.msg = scrubbed
+                    record.args = None
+                return True
+
         logging.basicConfig(level=logging.WARNING)
+        scrub = _CredentialScrubFilter()
         for name in ("web3.providers.HTTPProvider", "web3.RequestManager", "urllib3.connectionpool"):
-            logging.getLogger(name).setLevel(logging.DEBUG)
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.DEBUG)
+            lg.addFilter(scrub)
+        # Also install on the root logger so any other library that picks up
+        # urllib3's record via propagation gets the scrubbed form too.
+        logging.getLogger().addFilter(scrub)
 
 
 @app.command()
@@ -90,6 +123,7 @@ def info(
 ) -> None:
     """Show config paths and the resolved chain (default or `--chain`)."""
     from wallet.core.config import get_chain
+    from wallet.core.rpc import redact_url
     from wallet.storage.state import load_state, state_path
 
     state = load_state()
@@ -110,7 +144,9 @@ def info(
             "default_chain": state.default_chain,
             "active_chain": chain_cfg.name,
             "chain_id": chain_cfg.chain_id,
-            "rpc_url": chain_cfg.rpc_url,
+            # Always redact — `wallet info` is the canonical "share config
+            # with support" command and routinely gets pasted into chat.
+            "rpc_url": redact_url(chain_cfg.rpc_url),
             "explorer_tx_url": chain_cfg.explorer_tx_url,
         },
     }
