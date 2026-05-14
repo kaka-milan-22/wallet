@@ -1,11 +1,85 @@
 from __future__ import annotations
 
+import os
+import time
+from typing import Callable, TypeVar
+
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
 from web3 import HTTPProvider, Web3
 from web3.exceptions import Web3RPCError
 
 from wallet.core.config import ChainConfig
+
+__all__ = [
+    "RpcConnectError",
+    "call_with_retry",
+    "format_units",
+    "make_web3",
+    "parse_units",
+]
+
+
+# Transient RPC failures we'll retry. Permanent errors (Web3RPCError with
+# stable revert reasons, ValueErrors from input validation) are NOT retried —
+# retrying them would just slow down the failure. The list is intentionally
+# narrow: connectivity hiccups, timeouts, 5xx/429 from the gateway.
+_RETRYABLE_HTTP_STATUS = (429, 500, 502, 503, 504)
+T = TypeVar("T")
+
+
+def _is_retryable_http(e: HTTPError) -> bool:
+    if e.response is None:
+        return True  # no response at all → treat as transient
+    return e.response.status_code in _RETRYABLE_HTTP_STATUS
+
+
+def call_with_retry(
+    fn: Callable[[], T],
+    *,
+    attempts: int = 3,
+    base_delay: float = 0.25,
+    max_delay: float = 2.0,
+    on_retry: Callable[[int, Exception], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Call `fn()` with exponential backoff on transient RPC errors.
+
+    Designed for IDEMPOTENT reads only (eth_call, eth_getBalance, chainId,
+    eth_blockNumber, etc.). Never wrap a write — retrying a half-succeeded
+    `eth_sendRawTransaction` is exactly how you double-broadcast.
+
+    Schedule with defaults: 250ms → 500ms → 1000ms (capped at max_delay).
+    `WALLET_RPC_RETRY_ATTEMPTS=N` env var lets you disable retries (N=1) or
+    crank it up for a flaky endpoint during recovery.
+
+    Returns whatever `fn()` returns. Reraises the last exception when all
+    attempts are exhausted, so the error envelope is unchanged from before.
+    """
+    env_attempts = os.environ.get("WALLET_RPC_RETRY_ATTEMPTS")
+    if env_attempts and env_attempts.isdigit():
+        attempts = max(1, int(env_attempts))
+
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except HTTPError as e:
+            if not _is_retryable_http(e):
+                raise
+            last = e
+        except (RequestsConnectionError, Timeout) as e:
+            last = e
+        if i < attempts - 1:
+            delay = min(max_delay, base_delay * (2 ** i))
+            if on_retry is not None:
+                try:
+                    on_retry(i + 1, last)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+            sleep(delay)
+    assert last is not None
+    raise last
 
 
 class RpcConnectError(RuntimeError):
@@ -25,7 +99,11 @@ def make_web3(chain: ChainConfig, timeout: int = 20) -> Web3:
     """
     w3 = Web3(HTTPProvider(chain.rpc_url, request_kwargs={"timeout": timeout}))
     try:
-        actual = w3.eth.chain_id
+        # chainId is the canonical idempotent read — perfect candidate for
+        # retry. Flaky free-tier RPCs intermittently 502 on the very first
+        # call; retrying once or twice usually clears it without the user
+        # ever seeing an error envelope.
+        actual = call_with_retry(lambda: w3.eth.chain_id)
     except HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
         raise RpcConnectError(

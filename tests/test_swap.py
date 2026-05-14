@@ -101,7 +101,7 @@ def test_prepare_swap_erc20_with_allowance_builds_tx():
     assert pt.tx["to"] == ROUTER
     assert pt.tx["data"] == "0xdeadbeef"
     assert pt.tx["value"] == 0
-    assert pt.tx["nonce"] == 5
+    assert "nonce" not in pt.tx  # Tier 1.1: nonce is refreshed at sign-time
     assert pt.tx["chainId"] == 11155111
     assert pt.tx["type"] == 2
     assert pt.tx["gas"] == 120_000

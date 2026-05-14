@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import typer
 
-from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit
+from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit, resolve_account
 from wallet.cli._output import emit_error
 from wallet.core.config import get_chain
 from wallet.core.rpc import parse_units
@@ -68,18 +68,11 @@ def swap(
     w3 = make_web3_or_exit(cfg, command="swap")
 
     # Sender account
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            emit_error("validation_error", command="swap", chain=cfg.name,
-                       reason=f"unknown account: {account}")
-            raise typer.Exit(code=2)
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            emit_error("validation_error", command="swap", chain=cfg.name,
-                       reason="no default account; pass --account")
-            raise typer.Exit(code=2)
+    try:
+        sender = resolve_account(state, account)
+    except typer.BadParameter as e:
+        emit_error("validation_error", command="swap", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     # Tokens
     try:

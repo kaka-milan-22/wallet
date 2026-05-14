@@ -3,7 +3,12 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
-from wallet.cli._common import confirm_and_broadcast, resolve_address
+from wallet.cli._common import (
+    confirm_and_broadcast,
+    make_web3_or_exit,
+    resolve_account,
+    resolve_address,
+)
 from wallet.core.config import get_chain
 from wallet.core.rpc import parse_units
 from wallet.core.tokens import resolve_token
@@ -33,14 +38,7 @@ def send(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3_or_exit(cfg, command="send")
 
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            raise typer.BadParameter(f"unknown account: {account}")
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            raise typer.BadParameter("no default account — run `wallet account use <name>`")
+    sender = resolve_account(state, account)
 
     to_addr = resolve_address(state, to)
 

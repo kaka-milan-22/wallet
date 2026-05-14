@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from platformdirs import user_data_dir
+from wallet.core.config import atomic_write_text, data_root
 from pydantic import BaseModel, Field
 
 
@@ -44,7 +43,7 @@ class WalletState(BaseModel):
 
 
 def state_dir() -> Path:
-    p = Path(user_data_dir("wallet", appauthor=False))
+    p = data_root()
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -61,8 +60,4 @@ def load_state() -> WalletState:
 
 
 def save_state(state: WalletState) -> None:
-    p = state_path()
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(state.model_dump_json(indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(p)
+    atomic_write_text(state_path(), state.model_dump_json(indent=2))

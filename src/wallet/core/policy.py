@@ -13,17 +13,26 @@ absent, agents are denied by default — fail-closed; humans must run
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from platformdirs import user_data_dir
+from wallet.core.config import atomic_write_text, data_root
 from pydantic import BaseModel, Field
 
 from wallet.core.tokens import MAX_UINT256
 from wallet.storage.state import WalletState
+
+__all__ = [
+    "Decision",
+    "Policy",
+    "default_policy",
+    "evaluate",
+    "load_policy",
+    "policy_path",
+    "save_policy",
+]
 
 
 class Policy(BaseModel):
@@ -64,7 +73,7 @@ class Decision(BaseModel):
 
 
 def policy_path() -> Path:
-    return Path(user_data_dir("wallet", appauthor=False)) / "policy.json"
+    return data_root() / "policy.json"
 
 
 def load_policy() -> Policy | None:
@@ -75,12 +84,7 @@ def load_policy() -> Policy | None:
 
 
 def save_policy(policy: Policy) -> None:
-    p = policy_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(policy.model_dump_json(indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(p)
+    atomic_write_text(policy_path(), policy.model_dump_json(indent=2))
 
 
 def default_policy() -> Policy:

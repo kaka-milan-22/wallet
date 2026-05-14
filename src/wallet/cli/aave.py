@@ -7,7 +7,11 @@ from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.core.config import get_chain
 from web3.exceptions import ContractLogicError as _ContractLogicError
 
-from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit
+from wallet.cli._common import (
+    confirm_and_broadcast,
+    make_web3_or_exit,
+    resolve_account,
+)
 from wallet.core.rpc import parse_units
 from wallet.protocols.aave import (
     REPAY_MAX_AMOUNT,
@@ -297,18 +301,11 @@ def supply(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3_or_exit(cfg, command="aave.supply")
 
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            _emit_err("validation_error", command="aave.supply", chain=cfg.name,
-                      reason=f"unknown account: {account}")
-            raise typer.Exit(code=2)
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            _emit_err("validation_error", command="aave.supply", chain=cfg.name,
-                      reason="no default account; pass --account")
-            raise typer.Exit(code=2)
+    try:
+        sender = resolve_account(state, account)
+    except typer.BadParameter as e:
+        _emit_err("validation_error", command="aave.supply", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     try:
         reserve = resolve_aave_reserve(w3, cfg, token)
@@ -383,18 +380,11 @@ def withdraw(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3_or_exit(cfg, command="aave.withdraw")
 
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name,
-                      reason=f"unknown account: {account}")
-            raise typer.Exit(code=2)
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            _emit_err("validation_error", command="aave.withdraw", chain=cfg.name,
-                      reason="no default account; pass --account")
-            raise typer.Exit(code=2)
+    try:
+        sender = resolve_account(state, account)
+    except typer.BadParameter as e:
+        _emit_err("validation_error", command="aave.withdraw", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     try:
         reserve = resolve_aave_reserve(w3, cfg, token)
@@ -462,18 +452,11 @@ def faucet(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3_or_exit(cfg, command="aave.faucet")
 
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            _emit_err("validation_error", command="aave.faucet", chain=cfg.name,
-                      reason=f"unknown account: {account}")
-            raise typer.Exit(code=2)
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            _emit_err("validation_error", command="aave.faucet", chain=cfg.name,
-                      reason="no default account; pass --account")
-            raise typer.Exit(code=2)
+    try:
+        sender = resolve_account(state, account)
+    except typer.BadParameter as e:
+        _emit_err("validation_error", command="aave.faucet", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     try:
         reserve = resolve_aave_reserve(w3, cfg, token)
@@ -530,18 +513,11 @@ def borrow(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3_or_exit(cfg, command="aave.borrow")
 
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            _emit_err("validation_error", command="aave.borrow", chain=cfg.name,
-                      reason=f"unknown account: {account}")
-            raise typer.Exit(code=2)
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            _emit_err("validation_error", command="aave.borrow", chain=cfg.name,
-                      reason="no default account; pass --account")
-            raise typer.Exit(code=2)
+    try:
+        sender = resolve_account(state, account)
+    except typer.BadParameter as e:
+        _emit_err("validation_error", command="aave.borrow", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     try:
         reserve = resolve_aave_reserve(w3, cfg, token)
@@ -597,18 +573,11 @@ def repay(
     cfg = get_chain(chain or state.default_chain)
     w3 = make_web3_or_exit(cfg, command="aave.repay")
 
-    if account:
-        sender = state.find_account(account)
-        if not sender:
-            _emit_err("validation_error", command="aave.repay", chain=cfg.name,
-                      reason=f"unknown account: {account}")
-            raise typer.Exit(code=2)
-    else:
-        sender = state.get_default_account()
-        if not sender:
-            _emit_err("validation_error", command="aave.repay", chain=cfg.name,
-                      reason="no default account; pass --account")
-            raise typer.Exit(code=2)
+    try:
+        sender = resolve_account(state, account)
+    except typer.BadParameter as e:
+        _emit_err("validation_error", command="aave.repay", chain=cfg.name, reason=str(e))
+        raise typer.Exit(code=2)
 
     try:
         reserve = resolve_aave_reserve(w3, cfg, token)

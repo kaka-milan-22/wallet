@@ -56,8 +56,71 @@ _BUILTIN_PRESETS: dict[str, dict] = {
 }
 
 
+_DATA_HOME_ENV_VARS = ("WALLET_HOME", "WALLET_DATA_DIR")
+
+
+def data_root() -> Path:
+    """Resolve the base directory for all wallet runtime state (chains.json,
+    state.json, policy.json, audit.log, idempotency.json).
+
+    Precedence:
+      1. `$WALLET_HOME` if set
+      2. `$WALLET_DATA_DIR` if set (legacy alias)
+      3. `platformdirs.user_data_dir("wallet")` — the default on macOS / Linux
+
+    Lets you isolate per-test / per-container / per-account state without
+    polluting the user's real config. Required for CI parallelism too —
+    multiple test processes would otherwise step on each other's state.
+    """
+    for env in _DATA_HOME_ENV_VARS:
+        v = os.environ.get(env)
+        if v:
+            return Path(v).expanduser()
+    return Path(user_data_dir("wallet", appauthor=False))
+
+
 def chains_config_path() -> Path:
-    return Path(user_data_dir("wallet", appauthor=False)) / "chains.json"
+    return data_root() / "chains.json"
+
+
+def atomic_write_text(p: Path, text: str, *, mode: int = 0o600) -> None:
+    """Crash-safe atomic file replace with fsync.
+
+    We use this for `state.json`, `policy.json`, and `idempotency.json` —
+    files where a torn write (process killed between `os.write` and the actual
+    flush-to-disk) could either lose the entire file or, worse, leave
+    half-written JSON that fails to parse and breaks the next run.
+
+    Steps:
+      1. write to `<p>.tmp` with restrictive mode
+      2. fsync the file so its contents are on disk
+      3. rename `<p>.tmp` → `<p>` (atomic on POSIX)
+      4. fsync the *parent directory* so the rename itself is durable
+
+    Without (2) the new contents may not survive a crash. Without (4) the
+    rename may not survive a crash. Both matter for `idempotency.json` in
+    particular — a corrupted ledger could let an agent double-broadcast.
+    """
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.chmod(tmp, mode)
+    os.replace(tmp, p)
+    try:
+        dir_fd = os.open(p.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        # Some filesystems (notably overlay/tmpfs in containers) don't allow
+        # fsync on a directory fd. Best-effort.
+        pass
 
 
 def get_chain(name: str = "sepolia") -> ChainConfig:

@@ -8,9 +8,12 @@ libraries (libsecp256k1).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from eth_account import Account
+from eth_account.hdaccount import ValidationError as _MnemonicValidationError
+
+__all__ = ["DerivedAccount", "default_path", "derive", "generate_mnemonic", "is_valid_mnemonic"]
 
 # Required since eth-account 0.5.0; the feature is stable but not formally audited.
 Account.enable_unaudited_hdwallet_features()
@@ -25,7 +28,12 @@ def default_path(index: int = 0) -> str:
 class DerivedAccount:
     address: str  # EIP-55 checksummed
     path: str
-    private_key: bytes
+    # `repr=False` is load-bearing security: the default dataclass __repr__ would
+    # print the full private key bytes any time this object hits a traceback,
+    # debugger watch, logging call, or accidental print(). The whole "secret
+    # never enters LLM context" invariant relies on these 32 bytes staying off
+    # stdout/stderr — making them invisible to repr is the right default.
+    private_key: bytes = field(repr=False)
 
 
 def generate_mnemonic() -> str:
@@ -50,5 +58,8 @@ def is_valid_mnemonic(mnemonic: str) -> bool:
     try:
         Account.from_mnemonic(mnemonic, account_path=default_path(0))
         return True
-    except Exception:
+    except (_MnemonicValidationError, ValueError):
+        # eth-account 0.13 raises ValidationError for bad words / wrong length;
+        # ValueError covers edge cases (empty string, non-string input). We
+        # deliberately don't swallow other exceptions so real bugs surface.
         return False

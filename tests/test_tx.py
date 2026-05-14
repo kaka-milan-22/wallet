@@ -46,7 +46,9 @@ def test_native_transfer_builds_eip1559():
     tx = pt.tx
     assert tx["chainId"] == 11155111
     assert tx["type"] == 2
-    assert tx["nonce"] == 5
+    # nonce is intentionally absent at prepare-time; confirm_and_broadcast
+    # refreshes it from "pending" right before signing.
+    assert "nonce" not in tx
     assert tx["from"] == FROM
     assert tx["to"] == TO
     assert tx["value"] == Web3.to_wei(1, "ether")
@@ -56,6 +58,31 @@ def test_native_transfer_builds_eip1559():
     assert pt.estimated_fee_wei == tx["maxFeePerGas"] * tx["gas"]
     assert pt.description["kind"] == "native transfer"
     assert pt.description["amount_wei"] == Web3.to_wei(1, "ether")
+
+
+def test_prepared_tx_never_bakes_in_nonce_even_when_builder_fills_it():
+    """`Contract.build_transaction(base)` auto-fills nonce from the chain if
+    `base` lacks it. We must strip that out so the broadcast path always reads
+    a fresh nonce."""
+    w3 = MagicMock(spec=Web3)
+    w3.eth = MagicMock()
+    w3.eth.max_priority_fee = Web3.to_wei(2, "gwei")
+    w3.eth.get_block.return_value = {"baseFeePerGas": Web3.to_wei(10, "gwei")}
+    w3.eth.call.return_value = b""
+
+    fake_contract = MagicMock()
+    approve_fn = MagicMock()
+
+    def build_tx(base):
+        # Simulate web3.py behavior: builder pre-fills nonce from chain state
+        return {**base, "nonce": 42, "to": TOKEN, "data": "0x", "value": 0, "gas": 50000}
+
+    approve_fn.build_transaction.side_effect = build_tx
+    fake_contract.functions.approve.return_value = approve_fn
+    w3.eth.contract.return_value = fake_contract
+
+    pt = prepare_erc20_approve(w3, SEPOLIA, FROM, TOKEN, TO, 100, "USDC", 6)
+    assert "nonce" not in pt.tx, "builder-injected nonce must be stripped at prepare time"
 
 
 def test_priority_fee_floored_to_one_gwei_when_rpc_returns_zero():
