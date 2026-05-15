@@ -99,7 +99,9 @@ class UniswapV3DirectRoute(RouteProvider):
         )
 
         # Native ETH input: calldata uses WETH address (router wraps via msg.value).
-        is_native_in = token_in.symbol == chain.native_symbol
+        # Route on token_in.is_native (set only by the CLI's native-symbol branch);
+        # symbol() is attacker-controlled for 0x… tokens. See security_review.md Vuln 1.
+        is_native_in = token_in.is_native
         effective_in_address = (
             Web3.to_checksum_address(chain.builtin_tokens["WETH"])
             if is_native_in

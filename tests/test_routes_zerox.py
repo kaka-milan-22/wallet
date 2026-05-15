@@ -119,7 +119,7 @@ def test_native_eth_uses_sentinel(monkeypatch):
         return _ok_response(payload)
     monkeypatch.setattr(httpx, "get", fake_get)
 
-    eth = TokenInfo(symbol="ETH", address=WETH.address, decimals=18)
+    eth = TokenInfo(symbol="ETH", address=WETH.address, decimals=18, is_native=True)
     q = ZeroExRoute().quote(
         w3=MagicMock(), chain=CHAIN, sender=SENDER,
         token_in=eth, token_out=USDC, amount_in_wei=10**16, slippage_bps=50,
@@ -127,6 +127,33 @@ def test_native_eth_uses_sentinel(monkeypatch):
 
     assert captured["params"]["sellToken"].lower() == ZEROX_NATIVE_SENTINEL.lower()
     assert q.value == 10**16
+
+
+def test_fake_native_symbol_does_not_use_sentinel(monkeypatch):
+    """Regression for security_review.md Vuln 1.
+
+    A token with symbol="ETH" but is_native=False is an ERC-20 — 0x routing
+    must send its actual address as sellToken, NOT the native sentinel.
+    """
+    monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
+    payload = _zerox_quote_payload(buy_amount=10**6)
+
+    captured: dict = {}
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["params"] = params
+        return _ok_response(payload)
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    fake_eth = TokenInfo(
+        symbol="ETH", address="0x" + "ba" * 20, decimals=18,  # is_native=False
+    )
+    ZeroExRoute().quote(
+        w3=MagicMock(), chain=CHAIN, sender=SENDER,
+        token_in=fake_eth, token_out=USDC, amount_in_wei=10**16, slippage_bps=50,
+    )
+
+    assert captured["params"]["sellToken"].lower() != ZEROX_NATIVE_SENTINEL.lower()
+    assert captured["params"]["sellToken"].lower() == fake_eth.address.lower()
 
 
 def test_404_response_raises_no_route(monkeypatch):

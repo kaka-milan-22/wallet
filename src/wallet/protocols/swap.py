@@ -64,9 +64,12 @@ def prepare_swap(
         amount_in_wei=amount_in_wei, slippage_bps=slippage_bps,
     )
 
-    # Allowance pre-check (skip for native ETH input — value=msg.value, no transferFrom)
-    is_native_in = token_in.symbol == chain.native_symbol
-    if not is_native_in:
+    # Allowance pre-check (skip for native ETH input — value=msg.value, no transferFrom).
+    # Route on token_in.is_native, NOT symbol: a malicious ERC-20 can return any
+    # symbol() (including the chain's native symbol), so symbol comparison would
+    # let it slip past the allowance check and have value=amount_in_wei sent as
+    # real native ETH. See security_review.md Vuln 1.
+    if not token_in.is_native:
         current = allowance(w3, token_in.address, sender, quote.spender)
         if current < amount_in_wei:
             raise InsufficientAllowance(
