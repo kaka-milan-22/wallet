@@ -29,7 +29,11 @@ def _resolve_token_or_native(w3, chain, state, query: str) -> TokenInfo:
             raise ValueError(
                 f"Chain {chain.name} has no WETH configured; cannot swap native {chain.native_symbol}"
             )
-        return TokenInfo(symbol=chain.native_symbol, address=weth, decimals=18)
+        # is_native=True is set HERE and only here — the single trusted boundary
+        # for "this is real native ETH, not an ERC-20 that happens to be called ETH".
+        return TokenInfo(
+            symbol=chain.native_symbol, address=weth, decimals=18, is_native=True,
+        )
     return resolve_token(w3, chain, state, query)
 
 

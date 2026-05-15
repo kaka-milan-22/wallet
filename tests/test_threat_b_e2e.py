@@ -419,6 +419,10 @@ def test_json_idempotent_replay_envelope(
 
     obj = json.loads(capsys.readouterr().out.strip())
     assert obj["ok"] is True
+    # Top-level `replayed: true` so agents don't have to dig into data.phase
+    # to distinguish a cache hit from a fresh broadcast.
+    # See security_review.md Vuln 2.
+    assert obj.get("replayed") is True
     assert obj["data"]["phase"] == "idempotent_replay"
     assert obj["data"]["outcome"] == "replayed_idempotent"
     assert "tx_hash" in obj["data"]

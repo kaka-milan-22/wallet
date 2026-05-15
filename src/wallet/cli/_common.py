@@ -258,6 +258,19 @@ def _render_preview(state: WalletState, chain: ChainConfig):
 
         # Swap-specific preview rows
         if d.get("kind") == "swap":
+            # Show the input token's resolved on-chain address so a reader can
+            # diff against what they expected to sell. Symbol alone is unsafe —
+            # any ERC-20 can claim symbol="ETH". See security_review.md Vuln 1.
+            if "swap_token_in_address" in d:
+                table.add_row(
+                    "token in",
+                    f"{d['swap_token_in_address']} ({d.get('unit', '?')})",
+                )
+            if "swap_token_out_address" in d:
+                table.add_row(
+                    "token out",
+                    f"{d['swap_token_out_address']} ({d.get('swap_token_out_symbol', '?')})",
+                )
             table.add_row("route", d.get("swap_route", "?"))
             table.add_row(
                 "expected out",
@@ -458,7 +471,16 @@ def confirm_and_broadcast(
                 "outcome": "replayed_idempotent",
                 "original_created_at": cached.created_at,
             })
-            envelope = {"ok": True, "command": cmd, "chain": chain.name, "data": replay_data}
+            # `replayed: true` is a top-level flag so agents can distinguish
+            # cache-hit from a fresh broadcast without parsing data.phase.
+            # See security_review.md Vuln 2.
+            envelope = {
+                "ok": True,
+                "replayed": True,
+                "command": cmd,
+                "chain": chain.name,
+                "data": replay_data,
+            }
 
             def render_replay(_e):
                 info(f"[dim]idempotent replay (request_id={request_id}, original from {cached.created_at})[/dim]")

@@ -66,22 +66,56 @@ def _save(data: dict[str, dict]) -> None:
     atomic_write_text(store_path(), json.dumps(data, indent=2, sort_keys=True))
 
 
+def _norm_addr(v):
+    """Lowercase a 0x… address; pass anything else (None, ints) through unchanged.
+
+    Checksum casing must not affect the fingerprint, or two ostensibly identical
+    operations will hash differently depending on where the address was sourced.
+    """
+    if isinstance(v, str) and v.startswith("0x"):
+        return v.lower()
+    return v
+
+
 def fingerprint(prepared, chain) -> str:
-    """Stable hash of the operation parameters. Same logical op → same hash."""
+    """Stable hash of the operation parameters. Same logical op → same hash.
+
+    Security-critical: a too-narrow fingerprint causes silent replay of the
+    WRONG cached tx_hash when an agent reuses a request_id across logically
+    different ops. See security_review.md Vuln 2. The contract is that any
+    description field that influences on-chain effects must contribute here.
+
+    Addresses are lowercased so checksum-casing differences (e.g. EIP-55 vs
+    lower-hex sources) cannot produce divergent fingerprints for the same op.
+
+    Nonce is intentionally NOT included: a retry with a fresh nonce (because a
+    previous attempt advanced chain state) is still the same logical op.
+    """
     desc = prepared.description
     canonical = json.dumps(
         {
+            # Chain identity: include chain_id, not just the human name, so a
+            # forked / re-aliased chain config can't shadow a different chain.
             "chain": chain.name,
-            "from": desc.get("from"),
-            "to": desc.get("to"),
-            "spender": desc.get("spender"),
+            "chain_id": int(getattr(chain, "chain_id", 0) or 0),
             "kind": desc.get("kind"),
+            "from": _norm_addr(desc.get("from")),
+            "to": _norm_addr(desc.get("to")),
+            "spender": _norm_addr(desc.get("spender")),
             "amount_wei": str(desc.get("amount_wei", 0)),
             "unit": desc.get("amount_unit"),
-            "token": desc.get("token_address"),
-            # Note: nonce is NOT in the fingerprint. A retry of the same logical
-            # request with a fresh nonce (because previous attempt advanced
-            # chain state) is still the same logical op.
+            # Transfer / approve token (kind="<SYM> transfer" / "<SYM> approve")
+            "token": _norm_addr(desc.get("token_address")),
+            # Swap-specific fields. Without these, two swaps that differ only in
+            # output token or min-out collapse to the same hash and the second
+            # replays the FIRST's tx_hash silently.
+            "swap_token_in": _norm_addr(desc.get("swap_token_in_address")),
+            "swap_token_out": _norm_addr(desc.get("swap_token_out_address")),
+            "swap_amount_out_min_wei": str(desc.get("swap_amount_out_min_wei", "")),
+            # Aave-specific fields. Asset address + action distinguishes
+            # supply USDC vs supply WETH at the same pool.
+            "aave_action": desc.get("aave_action"),
+            "aave_asset": _norm_addr(desc.get("aave_asset_address")),
         },
         sort_keys=True,
         separators=(",", ":"),

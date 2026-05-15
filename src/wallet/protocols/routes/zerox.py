@@ -48,8 +48,10 @@ class ZeroExRoute(RouteProvider):
                 "(get a free key at https://dashboard.0x.org)"
             )
 
-        is_native_in = token_in.symbol == chain.native_symbol
-        is_native_out = token_out.symbol == chain.native_symbol
+        # Route on is_native, not symbol — symbol() on a 0x… contract is
+        # attacker-controlled. See security_review.md Vuln 1.
+        is_native_in = token_in.is_native
+        is_native_out = token_out.is_native
         sell_token = ZEROX_NATIVE_SENTINEL if is_native_in else token_in.address
         buy_token = ZEROX_NATIVE_SENTINEL if is_native_out else token_out.address
 

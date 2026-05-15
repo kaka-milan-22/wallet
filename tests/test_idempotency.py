@@ -33,6 +33,12 @@ class FakePrepared:
 
 class FakeChain:
     name = "sepolia"
+    chain_id = 11155111
+
+
+class FakeChainMainnet:
+    name = "mainnet"
+    chain_id = 1
 
 
 def test_fingerprint_stable_for_same_logical_op():
@@ -59,6 +65,54 @@ def test_fingerprint_ignores_nonce():
     pt1 = FakePrepared(kind="t", to="0xa", amount_wei=1000, amount_unit="ETH", _nonce=5)
     pt2 = FakePrepared(kind="t", to="0xa", amount_wei=1000, amount_unit="ETH", _nonce=7)
     assert fingerprint(pt1, FakeChain()) == fingerprint(pt2, FakeChain())
+
+
+# --- Regression tests for security_review.md Vuln 2 -------------------------
+# Earlier the swap path collapsed to a single fingerprint regardless of output
+# token, min-out, or chain_id, so a request_id reused across two different
+# swaps replayed the first tx_hash silently. Each assertion below would have
+# failed under the old fingerprint.
+
+
+def _swap_prep(**overrides):
+    base = dict(
+        kind="swap",
+        amount_wei=10**6,
+        amount_unit="USDC",
+        swap_token_in_address="0x" + "aa" * 20,
+        swap_token_out_address="0x" + "bb" * 20,
+        swap_amount_out_min_wei=10**18,
+    )
+    base.update(overrides)
+    return FakePrepared(**{"from": "0x" + "11" * 20, "to": "0x" + "22" * 20, **base})
+
+
+def test_fingerprint_differs_on_swap_token_out():
+    a = _swap_prep(swap_token_out_address="0x" + "bb" * 20)  # → WETH
+    b = _swap_prep(swap_token_out_address="0x" + "cc" * 20)  # → DAI
+    assert fingerprint(a, FakeChain()) != fingerprint(b, FakeChain())
+
+
+def test_fingerprint_differs_on_swap_min_out():
+    a = _swap_prep(swap_amount_out_min_wei=10**18)
+    b = _swap_prep(swap_amount_out_min_wei=2 * 10**18)
+    assert fingerprint(a, FakeChain()) != fingerprint(b, FakeChain())
+
+
+def test_fingerprint_differs_on_chain_id():
+    a = _swap_prep()
+    # Same chain name shouldn't be enough — chain_id must factor in.
+    sepolia_lookalike = type("X", (), {"name": "sepolia", "chain_id": 1})
+    assert fingerprint(a, FakeChain()) != fingerprint(a, sepolia_lookalike())
+
+
+def test_fingerprint_ignores_address_casing():
+    """Checksum vs lowercase for the same address must not produce different hashes."""
+    cs = "0x" + "Aa" * 20
+    lo = cs.lower()
+    a = _swap_prep(swap_token_out_address=cs)
+    b = _swap_prep(swap_token_out_address=lo)
+    assert fingerprint(a, FakeChain()) == fingerprint(b, FakeChain())
 
 
 def test_lookup_returns_none_when_unknown(isolated_store):

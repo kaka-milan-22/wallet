@@ -70,6 +70,11 @@ class TokenInfo:
     symbol: str
     address: str  # checksummed
     decimals: int
+    # True only when constructed by the CLI's native-symbol branch (e.g. "ETH").
+    # Routes / swap orchestration MUST use this flag — never symbol comparison —
+    # to decide msg.value vs ERC-20 transferFrom, since `symbol` for a 0x… token
+    # comes from the contract itself and is attacker-controlled.
+    is_native: bool = False
 
 
 def erc20(w3: Web3, address: str) -> Contract:

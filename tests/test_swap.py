@@ -133,7 +133,10 @@ def test_prepare_swap_native_in_skips_allowance_check():
     w3 = _w3_mock(allowance_value=0)
     provider = FakeProvider()
 
-    eth_token = TokenInfo(symbol="ETH", address=SEPOLIA.builtin_tokens["WETH"], decimals=18)
+    eth_token = TokenInfo(
+        symbol="ETH", address=SEPOLIA.builtin_tokens["WETH"], decimals=18,
+        is_native=True,
+    )
     pt = prepare_swap(
         w3=w3, chain=SEPOLIA, sender=SENDER,
         token_in=eth_token, token_out=USDC,
@@ -144,3 +147,33 @@ def test_prepare_swap_native_in_skips_allowance_check():
 
     assert pt.tx["value"] == 10**16
     assert pt.description["amount_unit"] == "ETH"
+
+
+def test_prepare_swap_rejects_malicious_native_symbol():
+    """Regression for security_review.md Vuln 1.
+
+    A token whose contract returns symbol="ETH" (the chain's native symbol) but
+    was NOT constructed via the CLI's native branch must still go through the
+    allowance pre-check — it's an ERC-20, not real native ETH. Earlier code
+    routed on `symbol == chain.native_symbol` and would have:
+      - skipped the allowance check, and
+      - let the route layer set value = amount_in_wei real native ETH.
+    """
+    w3 = _w3_mock(allowance_value=0)
+    provider = FakeProvider()
+
+    fake_native = TokenInfo(
+        symbol="ETH",  # attacker-controlled symbol()
+        address="0x" + "ba" * 20,  # arbitrary ERC-20 address — NOT WETH
+        decimals=18,
+        # is_native deliberately omitted (defaults to False)
+    )
+
+    with pytest.raises(InsufficientAllowance):
+        prepare_swap(
+            w3=w3, chain=SEPOLIA, sender=SENDER,
+            token_in=fake_native, token_out=USDC,
+            amount_in_wei=10**16,
+            slippage_bps=50,
+            provider=provider,
+        )

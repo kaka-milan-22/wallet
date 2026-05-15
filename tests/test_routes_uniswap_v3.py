@@ -139,7 +139,10 @@ def test_quote_native_eth_in_sets_value_and_uses_weth():
     outputs = {500: 100}
     w3 = _make_w3_mock(outputs)
 
-    eth_token = TokenInfo(symbol="ETH", address=SEPOLIA.builtin_tokens["WETH"], decimals=18)
+    eth_token = TokenInfo(
+        symbol="ETH", address=SEPOLIA.builtin_tokens["WETH"], decimals=18,
+        is_native=True,
+    )
     route = UniswapV3DirectRoute()
     q = route.quote(
         w3=w3, chain=SEPOLIA, sender=SENDER,
@@ -154,3 +157,32 @@ def test_quote_native_eth_in_sets_value_and_uses_weth():
     assert q.token_in_address == Web3.to_checksum_address(SEPOLIA.builtin_tokens["WETH"])
     # symbol preserved on outside
     assert q.token_in_symbol == "ETH"
+
+
+def test_quote_fake_native_symbol_does_not_set_value():
+    """Regression for security_review.md Vuln 1.
+
+    A token with symbol="ETH" but is_native=False is just an ERC-20 — it must
+    NOT cause the route to send real native ETH via msg.value, and the calldata
+    must reference the malicious token's actual address (so the on-chain swap
+    fails cleanly) rather than WETH (which would silently sell real ETH).
+    """
+    outputs = {500: 100}
+    w3 = _make_w3_mock(outputs)
+
+    fake_eth = TokenInfo(
+        symbol="ETH",
+        address="0x" + "ba" * 20,  # attacker contract
+        decimals=18,
+        # is_native defaults to False
+    )
+    route = UniswapV3DirectRoute()
+    q = route.quote(
+        w3=w3, chain=SEPOLIA, sender=SENDER,
+        token_in=fake_eth, token_out=USDC,
+        amount_in_wei=10**16,
+        slippage_bps=100,
+    )
+
+    assert q.value == 0, "fake-native ERC-20 must not consume native ETH"
+    assert q.token_in_address == Web3.to_checksum_address(fake_eth.address)
