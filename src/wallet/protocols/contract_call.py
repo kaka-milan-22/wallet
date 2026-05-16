@@ -25,7 +25,7 @@ from eth_utils import function_signature_to_4byte_selector
 from web3 import Web3
 
 from wallet.core.config import ChainConfig
-from wallet.core.tx import PreparedTx, _common_fields, _simulate, _strip_nonce
+from wallet.core.tx import PreparedTx, _common_fields, finalize_tx
 
 
 __all__ = [
@@ -275,10 +275,7 @@ def prepare_contract_call(
         "value": int(value_wei),
         "data": calldata,
     }
-    tx["gas"] = w3.eth.estimate_gas(tx)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     canonical_sig = f"{fn_name}({','.join(types)})"
     return PreparedTx(

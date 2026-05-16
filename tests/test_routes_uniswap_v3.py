@@ -10,10 +10,10 @@ from web3 import Web3
 from wallet.core.config import ChainConfig
 from wallet.core.tokens import TokenInfo
 from wallet.protocols.routes.base import NoRouteError
+from wallet.core.slippage import apply_slippage_floor as _apply_slippage
 from wallet.protocols.routes.uniswap_v3 import (
     FEE_TIERS,
     UniswapV3DirectRoute,
-    _apply_slippage,
 )
 
 

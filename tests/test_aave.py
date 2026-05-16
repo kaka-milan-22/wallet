@@ -311,8 +311,8 @@ def test_prepare_supply_builds_tx_with_aave_kind():
 
 
 def test_prepare_supply_insufficient_allowance_raises():
+    from wallet.core.tokens import InsufficientAllowance
     from wallet.protocols.aave import AaveReserve, prepare_supply
-    from wallet.protocols.swap import InsufficientAllowance
 
     reserve = AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)
     w3 = _w3_mock_for_writes(allowance_value=0)  # no allowance

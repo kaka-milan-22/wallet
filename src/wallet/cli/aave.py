@@ -29,7 +29,7 @@ from wallet.protocols.aave import (
     ray_to_pct,
     resolve_aave_reserve,
 )
-from wallet.protocols.swap import InsufficientAllowance
+from wallet.core.tokens import InsufficientAllowance
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="Aave V3 read-only views (positions, rates)")
@@ -503,8 +503,8 @@ def borrow(
 
     Aave reverts if the post-borrow health factor would drop below 1.0.
     Setting `min_health_factor` in policy.json adds a more conservative pre-flight
-    block (e.g. 1.5) — `_simulate` catches Aave-level reverts, the policy gate
-    catches sooner.
+    block (e.g. 1.5) — `finalize_tx` catches Aave-level reverts via eth_call,
+    the policy gate catches sooner.
     """
     from wallet.cli._output import emit_error as _emit_err
     from wallet.core.config import get_chain
