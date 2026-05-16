@@ -104,7 +104,7 @@ def default_policy() -> Policy:
 
 
 def _category(prepared) -> str:
-    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'aave_*' / 'unknown'."""
+    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'aave_*' / 'lp_*' / 'unknown'."""
     kind = prepared.description.get("kind", "")
     if kind == "swap":
         return "swap"
@@ -118,6 +118,14 @@ def _category(prepared) -> str:
         return "aave_borrow"
     if kind == "aave repay":
         return "aave_repay"
+    if kind == "uniswap_v3 lp_mint":
+        return "lp_mint"
+    if kind == "uniswap_v3 lp_increase":
+        return "lp_increase"
+    if kind == "uniswap_v3 lp_decrease":
+        return "lp_decrease"
+    if kind == "uniswap_v3 lp_collect":
+        return "lp_collect"
     if "approve" in kind:
         return "approve"
     if "transfer" in kind:
@@ -318,6 +326,21 @@ def evaluate(
             return Decision(
                 allowed=False,
                 reason="aave-pool-not-in-contract-allowlist",
+                severity="block",
+            )
+
+    # --- 3g. uniswap_v3 LP ops: NFPM (description.to) must be in contract_allowlist ---
+    # Every NFPM call routes through the same address regardless of the LP
+    # action, so a single allowlist entry covers mint / increase / decrease /
+    # collect. Without this, an agent that can re-range could direct funds at
+    # a counterfeit NFPM under a router-only allowlist.
+    if category in ("lp_mint", "lp_increase", "lp_decrease", "lp_collect"):
+        nfpm = desc.get("to")
+        contracts = {a.lower() for a in policy.contract_allowlist}
+        if nfpm and nfpm.lower() not in contracts:
+            return Decision(
+                allowed=False,
+                reason="lp-nfpm-not-in-contract-allowlist",
                 severity="block",
             )
 
