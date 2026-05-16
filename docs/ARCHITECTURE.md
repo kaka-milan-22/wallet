@@ -11,7 +11,9 @@
 `wallet` is an **AI-agent-native EVM CLI wallet** written in Python 3.13. It
 exposes single on-chain primitives (send / approve / swap / Aave
 supply-withdraw-borrow-repay / Uniswap V3 LP positions-mint-increase-remove-collect)
-as `wallet <cmd>` subcommands. Every write call passes through a four-layer
+as `wallet <cmd>` subcommands, plus a **TTY-only generic escape hatch**
+(`wallet contract call <to> <fn-sig> [args…]`) for long-tail protocols that
+don't have a typed surface. Every write call passes through a four-layer
 safety stack (skill guidance → policy gate → idempotency → audit log) so an
 adversarial caller (compromised agent, prompt-injection, LLM hallucination)
 cannot bypass the user's spending limits, drain via unlimited approve, double
@@ -21,6 +23,15 @@ Strategy lives in an external layer that drives the CLI; the litmus rule for
 what may enter this repo is encoded as the skill at
 `.claude/skills/wallet-scope-litmus/SKILL.md` — apply it before adding any
 new command.
+
+**Typed surface vs generic escape hatch.** Typed `prepare_*` commands
+(`swap`, `aave *`, `lp *`, etc.) carry semantic policy depth — allowance
+pre-checks, HF guards, slippage, pool allowlists, deny-unlimited-approve.
+The generic `contract call` path is the long-tail escape hatch and is
+intentionally policy-shallow: humans-only (agent hard-block), gated by
+`contract_allowlist` + `sentinel_blocklist` + native value caps only. Add
+typed `prepare_*` when you need agent access or deep policy; use `contract
+call` for one-off human-signed ops.
 
 ---
 
@@ -61,21 +72,24 @@ wallet/
 │   │   ├── balance.py portfolio.py history.py   # read-only queries
 │   │   ├── send.py swap.py                       # transfer / DEX swap
 │   │   ├── aave.py lp.py                         # protocol command groups
+│   │   ├── contract.py                            # generic `wallet contract call` (TTY-only escape hatch)
 │   │   ├── policy.py chain.py book.py watch.py   # config / address book
 │   │   └── token.py
 │   ├── core/                   # protocol-agnostic primitives
 │   │   ├── config.py          # ChainConfig, data_root, atomic_write_text, _tighten_data_root
 │   │   ├── rpc.py             # make_web3 + chainId handshake, call_with_retry, redact_url, parse/format_units
-│   │   ├── tokens.py          # ERC20_ABI, TokenInfo (with is_native flag), fetch_token_info, allowance
-│   │   ├── tx.py              # PreparedTx dataclass + _common_fields / _simulate / _strip_nonce / broadcast
+│   │   ├── tokens.py          # ERC20_ABI, TokenInfo (with is_native flag), fetch_token_info, allowance, InsufficientAllowance, check_allowance_or_raise
+│   │   ├── tx.py              # PreparedTx + _common_fields + finalize_tx (estimate-gas + simulate + strip-nonce + fee_wei) + broadcast
+│   │   ├── slippage.py        # apply_slippage_floor — one source of truth for amount * (10000 - bps) / 10000
 │   │   ├── signer.py          # sign_transaction wrapping eth-account; reads mnemonic via FIFO
 │   │   ├── hd.py              # BIP-39/44 derivation; DerivedAccount with repr=False on private_key
 │   │   ├── policy.py          # Policy schema + evaluate() — the pre-broadcast gate
 │   │   └── uniswap_v3_math.py # Q96 TickMath / SqrtPriceMath / LiquidityAmounts (off-chain)
 │   ├── protocols/             # one module per write-protocol; read+write helpers
 │   │   ├── aave.py            # Aave V3 read + prepare_supply / withdraw / borrow / repay / faucet
-│   │   ├── swap.py            # prepare_swap dispatcher + InsufficientAllowance exception
+│   │   ├── swap.py            # prepare_swap dispatcher (allowance pre-check via core.tokens.check_allowance_or_raise)
 │   │   ├── uniswap_v3_lp.py   # NFPM read (get_positions) + prepare_mint / increase / decrease / collect
+│   │   ├── contract_call.py   # prepare_contract_call — generic signature-parsed → calldata → PreparedTx
 │   │   └── routes/            # swap route providers (RouteProvider ABC)
 │   │       ├── base.py        # RouteProvider, Quote, NoRouteError
 │   │       ├── uniswap_v3.py  # UniswapV3DirectRoute (QuoterV2 + SwapRouter02)
@@ -102,7 +116,7 @@ wallet/
 ├── pyproject.toml uv.lock ROADMAP.md README.md
 ```
 
-Source: ~8.1k LOC. Tests: ~5.8k LOC. Test ratio ~0.7×.
+Source: ~8.5k LOC. Tests: ~6.5k LOC. Test ratio ~0.75×.
 
 ---
 
@@ -161,15 +175,17 @@ agent ignores it, the deeper layers still hold.
 
 Rule families inside `evaluate()`:
 1. sentinel blocklist (highest priority)
-2. approve-specific: deny unlimited (`MAX_UINT256`) + spender ∈ `contract_allowlist`
-3. send-specific: recipient ∈ `recipient_allowlist`
-4. swap: router (`description.to`) ∈ `contract_allowlist`
-5. aave supply/withdraw/borrow/repay/faucet: pool/faucet ∈ `contract_allowlist`
-6. **LP: NFPM (`description.to`) ∈ `contract_allowlist`** (categories `lp_mint`, `lp_increase`, `lp_decrease`, `lp_collect`)
-7. `min_health_factor` enforcement for borrow / withdraw
-8. `max_per_tx` (per symbol)
-9. `max_per_day` (per symbol, summed from `audit.log` entries dated UTC today)
-10. first-send warn / block
+2. **`contract_call` (generic escape hatch): agent hard-block + target ∈ `contract_allowlist`** — no semantic gates exist on this path (no allowance check, no HF guard, no slippage, no pool match), so it's TTY-only by construction. `msg.value` flows through `amount_wei` / `unit=ETH` so `max_per_tx{ETH}` still binds below.
+3. approve-specific: deny unlimited (`MAX_UINT256`) + spender ∈ `contract_allowlist`
+4. send-specific: recipient ∈ `recipient_allowlist`
+5. swap: router (`description.to`) ∈ `contract_allowlist`
+6. aave supply/withdraw/borrow/repay/faucet: pool/faucet ∈ `contract_allowlist`
+7. **LP NFPM ∈ `contract_allowlist`** (all 4 LP categories: `lp_mint`, `lp_increase`, `lp_decrease`, `lp_collect`)
+8. **LP funds-in pool match: `(lp_token0_address, lp_token1_address, lp_fee)` ∈ `lp_pool_allowlist`** (categories `lp_mint`, `lp_increase` only; exit ops `lp_decrease` / `lp_collect` are NOT gated since they pull funds OUT of positions the user already holds). NFPM allowlist alone is insufficient because one NFPM serves every V3 pool; this is the LP-layer analogue of the swap symbol-confusion gate.
+9. `min_health_factor` enforcement for borrow / withdraw
+10. `max_per_tx` (per symbol)
+11. `max_per_day` (per symbol, summed from `audit.log` entries dated UTC today)
+12. first-send warn / block
 
 Fail-closed: missing `policy.json` → `no-policy-configured-run-wallet-policy-init`, no agent op can proceed.
 
@@ -181,7 +197,7 @@ Bypass: `--policy-bypass` is TTY-only; agents auto-rejected even with the flag.
 - Same `request_id` + different `fingerprint` → raise `IdempotencyMismatch` (programmer error: agent reused an ID across logically different ops)
 - TTL 24h, swept on each `record()`.
 
-`fingerprint(prepared, chain)` canonicalises everything that affects on-chain behavior. Hardened by commit `960087a` (security_review.md Vuln 2) to include `chain_id` (not just `chain.name`), lowercased addresses, all swap/aave op-differentiating fields. PR #3 added LP fields: `lp_action`, `lp_nft_token_id`, `lp_token0/1`, `lp_fee`, `lp_tick_lower/upper`, `lp_liquidity_wei`, `lp_amount{0,1}_{desired,min}_wei`, `lp_recipient`. **Any new write protocol MUST add its op-differentiating fields here, otherwise two different ops collapse to the same hash and the second silently replays the first's tx_hash.**
+`fingerprint(prepared, chain)` canonicalises everything that affects on-chain behavior. Hardened by `1.01` / commit `960087a` (security_review.md Vuln 2) to include `chain_id` (not just `chain.name`), lowercased addresses, all swap/aave op-differentiating fields. LP fields added with the LP primitives PR: `lp_action`, `lp_nft_token_id`, `lp_token0/1`, `lp_fee`, `lp_tick_lower/upper`, `lp_liquidity_wei`, `lp_amount{0,1}_{desired,min}_wei`, `lp_recipient`. `1.03` added `cc_calldata` for the generic contract-call path so two different fns to the same target with the same `msg.value` (e.g. `pause()` vs `unpause()`) don't collapse and silently replay. **Any new write protocol MUST add its op-differentiating fields here, otherwise two different ops collapse to the same hash and the second silently replays the first's tx_hash.**
 
 Agent callers without `--request-id` are blocked (`missing_request_id`). TTY callers may omit.
 
@@ -212,18 +228,22 @@ follows this exact sequence; the differences are confined to the
 2.  protocols/<proto>.py:prepare_*(...) →
         a. resolve protocol addresses via core/config.py:get_protocol_address
         b. for write paths needing token approvals:
-             allowance(w3, token, sender, spender) check
-             → raise InsufficientAllowance if short (CLI maps to
-               error envelope "insufficient_allowance" with
+             check_allowance_or_raise(w3, token, sender, spender, required_wei)
+             → no-op when token.is_native or required_wei == 0
+             → otherwise raise InsufficientAllowance (CLI maps to error
+               envelope "insufficient_allowance" with
                suggested_command="wallet approve set ...")
         c. build base tx fields via core/tx.py:_common_fields (chainId,
            from, type=2, EIP-1559 maxFeePerGas = base*2 + priority,
            NO nonce)
         d. encode calldata via web3 Contract.functions.<name>(...).build_transaction
-           OR raw {"to","data","value"} + estimate_gas
-        e. _simulate(w3, tx)  ← eth_call; ContractLogicError → RuntimeError("simulation reverted: ...")
-        f. _strip_nonce(tx)    ← ensure tx is nonce-less leaving prepare_*
-        g. return PreparedTx(tx, estimated_fee_wei, description={kind, from, to, ...})
+           OR raw {"to","data","value"}
+        e. fee_wei = finalize_tx(w3, tx) — runs estimate_gas (if not
+           already set by build_transaction), pre-simulates via eth_call
+           (ContractLogicError → RuntimeError("simulation reverted: ...")),
+           strips nonce, and returns maxFeePerGas * gas. Single point of
+           "tx is ready for signing" — never bypass.
+        f. return PreparedTx(tx, fee_wei, description={kind, from, to, ...})
         ↓
 3.  cli/_common.py:confirm_and_broadcast(w3, state, chain, sender, prepared, dry_run, yes, policy_bypass, request_id):
         if dry_run:
@@ -249,20 +269,24 @@ follows this exact sequence; the differences are confined to the
 ```
 
 Notes for new contributors:
-- **Nonce is deliberately late-bound.** `_strip_nonce` removes it from the
-  prepared tx so the broadcast time re-read of `pending` reflects any other
-  tx that landed between prepare and broadcast. Don't move it back to
-  `prepare_*`.
-- **`_simulate` is mandatory.** It's the only place revert reasons get
-  surfaced as `simulation_reverted` envelopes. Skipping it lets an agent
-  burn gas on a guaranteed-revert tx and miss `aave error code 51` style
-  hints.
+- **Nonce is deliberately late-bound.** `finalize_tx` strips it from the
+  prepared tx so the broadcast-time re-read of `pending` reflects any other
+  tx that landed between prepare and broadcast. Don't move nonce-setting
+  back into `prepare_*`.
+- **`finalize_tx` is mandatory.** It's the only place revert reasons get
+  surfaced as `simulation_reverted` envelopes (via the wrapped `eth_call`).
+  Bypassing it lets an agent burn gas on a guaranteed-revert tx and miss
+  `aave error code 51` style hints, AND leaves a stale nonce in the tx.
 - **`description.kind` is the routing key.** `cli/_common.py:_CLASSIFY_TABLE`
   + `core/policy.py:_category` both look it up. Adding a new write op
   means adding a row in `_CLASSIFY_TABLE` AND a branch in `policy._category`
   AND (if applicable) a contract-allowlist check in `policy.evaluate`.
   Forgetting any one of these triggers either "unknown" classification or
-  a missing security check.
+  a missing security check. `_CLASSIFY_TABLE` is **order-sensitive**: the
+  `contains "contract call"` row is placed before the `contains "transfer"`
+  / `contains "approve"` rows so a function literally named `transfer(...)`
+  or `approve(...)` can't slip into the typed `send` / `approve` category
+  and dodge the `contract_call` agent-block.
 
 ---
 
@@ -274,11 +298,12 @@ Notes for new contributors:
 |---|---|---|
 | `config.py` | `ChainConfig`, `get_chain`, `list_chains`, `get_protocol_address`, `data_root`, `chains_config_path`, `atomic_write_text`, `_tighten_data_root` | Sepolia preset is in-source. Mainnet config comes from `~/.wallet/chains.json` if present. `data_root()` is the single source of truth for state-file paths. |
 | `rpc.py` | `make_web3`, `RpcConnectError`, `call_with_retry`, `redact_url`, `scrub_message_of_url`, `format_units`, `parse_units` | `make_web3` does a chainId handshake and converts every failure into `RpcConnectError`. URL redaction guards API keys in JSON envelopes and logs. |
-| `tokens.py` | `ERC20_ABI`, `TokenInfo`, `MAX_UINT256`, `erc20`, `fetch_token_info`, `clear_token_info_cache`, `balance_of`, `allowance`, `resolve_token` | `TokenInfo.is_native` is THE security gate for native ETH routing — set ONLY by `cli/swap.py:_resolve_token_or_native` when user literally types the chain's native symbol. |
-| `tx.py` | `PreparedTx`, `prepare_native_transfer`, `prepare_erc20_transfer`, `prepare_erc20_approve`, `broadcast`, `_common_fields`, `_simulate`, `_strip_nonce` | EIP-1559 fees floored at 1 gwei priority. Nonce intentionally never set inside this module. |
+| `tokens.py` | `ERC20_ABI`, `TokenInfo`, `MAX_UINT256`, `erc20`, `fetch_token_info`, `clear_token_info_cache`, `balance_of`, `allowance`, `resolve_token`, `InsufficientAllowance`, `check_allowance_or_raise` | `TokenInfo.is_native` is THE security gate for native ETH routing — set ONLY by `cli/swap.py:_resolve_token_or_native` when user literally types the chain's native symbol. `InsufficientAllowance` lives here (not in `protocols/swap.py`) because swap / aave / lp all raise it; `check_allowance_or_raise` is the one helper to call — it short-circuits on `is_native` and `required_wei == 0`. |
+| `tx.py` | `PreparedTx`, `prepare_native_transfer`, `prepare_erc20_transfer`, `prepare_erc20_approve`, `broadcast`, `finalize_tx`, `_common_fields`, `_simulate`, `_strip_nonce` | EIP-1559 fees floored at 1 gwei priority. Nonce intentionally never set inside this module. `finalize_tx` is the **public** wrapper for `estimate_gas (if missing) → _simulate → _strip_nonce → return maxFeePerGas * gas`; the underscore-prefixed helpers stay internal and shouldn't be called directly from new code. |
+| `slippage.py` | `apply_slippage_floor` | Single source of truth for `amount * (10_000 - slippage_bps) // 10_000` with `[0, 10_000]` validation. Replaces the identical-but-separate `_apply_slippage` / `_apply_slippage_floor` that used to live in `routes/uniswap_v3.py` and `uniswap_v3_lp.py`. |
 | `signer.py` | `sign_transaction` | Reads mnemonic via `agent-vault` Unix FIFO into the signing process. Never lands on disk. |
 | `hd.py` | `derive_account`, `DerivedAccount` | BIP-39/44. `DerivedAccount.private_key` has `repr=False` so `print()` / debug traces / `rich.log` never leak it. |
-| `policy.py` | `Policy`, `Decision`, `evaluate`, `default_policy`, `load_policy`, `save_policy`, `policy_path` | The actual gate. Categories enumerated in `_category()`. **Every new `description.kind` you add must be classified here, otherwise security checks silently skip your new op.** |
+| `policy.py` | `Policy`, `Decision`, `LpPoolAllowEntry`, `evaluate`, `default_policy`, `load_policy`, `save_policy`, `policy_path` | The actual gate. Categories enumerated in `_category()` (includes `contract_call` — agent hard-block + TTY-only). `LpPoolAllowEntry` is the `(token0, token1, fee)` schema for `Policy.lp_pool_allowlist`, with pydantic validators enforcing the V3 invariant `token0 < token1` and known fee tiers `{100, 500, 3000, 10000}`. **Every new `description.kind` you add must be classified here, otherwise security checks silently skip your new op.** |
 | `uniswap_v3_math.py` | `MIN_TICK`, `MAX_TICK`, `MIN_SQRT_RATIO`, `MAX_SQRT_RATIO`, `Q96`, `MAX_UINT128`, `FEE_TIER_TICK_SPACING`, `tick_spacing_for_fee`, `align_to_tick_spacing`, `get_sqrt_ratio_at_tick`, `get_tick_at_sqrt_ratio`, `get_amount0_for_liquidity`, `get_amount1_for_liquidity`, `get_amounts_for_liquidity` | Pure Python, no third-party dep. Anchor ticks (MIN/0/MAX) match on-chain constants exactly; interior values within 1 ulp of on-chain TickMath. **Off-chain estimation only — do NOT use for on-chain equality checks; read `pool.slot0()` instead.** |
 
 ### protocols/
@@ -286,8 +311,9 @@ Notes for new contributors:
 | File | Pattern | Exports |
 |---|---|---|
 | `aave.py` | Read functions (`get_all_reserves`, `get_account_summary`, `get_user_positions`, `get_all_rates`, `get_asset_price`) + write builders (`prepare_supply`, `prepare_withdraw`, `prepare_borrow`, `prepare_repay`, `prepare_faucet_mint`) + HF projection helpers (`estimate_hf_after_borrow`, `estimate_hf_after_withdraw`). `WITHDRAW_MAX_AMOUNT` / `REPAY_MAX_AMOUNT` sentinels. Aave error codes mapped to human strings in `cli/aave.py:_AAVE_ERROR_CODES`. | |
-| `swap.py` | Orchestrator: `prepare_swap(w3, chain, sender, token_in, token_out, amount_in_wei, slippage_bps, provider)`. Pre-flight allowance check (skipped for `is_native` input). Raises `InsufficientAllowance` reused by aave + lp. | |
-| `uniswap_v3_lp.py` | Reads: `get_positions`, `fetch_position`. Writes: `prepare_collect`, `prepare_decrease_liquidity`, `prepare_mint`, `prepare_increase_liquidity`. Native ETH path wraps the action call in NFPM `multicall([action, refundETH])` so unused ETH bounces back atomically. Token order auto-sorted to (token0 < token1). Tick misalignment raises (no silent rounding). | |
+| `swap.py` | Orchestrator: `prepare_swap(w3, chain, sender, token_in, token_out, amount_in_wei, slippage_bps, provider)`. Pre-flight allowance gate via `core.tokens.check_allowance_or_raise` (skipped for `is_native` input). | |
+| `uniswap_v3_lp.py` | Reads: `get_positions`, `fetch_position`. Writes: `prepare_collect`, `prepare_decrease_liquidity`, `prepare_mint`, `prepare_increase_liquidity`. Native ETH path wraps the action call in NFPM `multicall([action, refundETH])` so unused ETH bounces back atomically. Token order auto-sorted to (token0 < token1). Tick misalignment raises (no silent rounding). Slippage minimums via `core.slippage.apply_slippage_floor`; allowance pre-checks via `core.tokens.check_allowance_or_raise`. | |
+| `contract_call.py` | Generic escape hatch: `parse_function_signature`, `coerce_arg`, `build_calldata`, `prepare_contract_call(w3, chain, sender, to, fn_sig, args, value_wei)`. Supports simple types + 1D arrays; tuples explicitly rejected with a "use typed `prepare_*`" hint. No token resolution, no allowance check, no slippage — intentionally bare since this path has no semantic policy depth. `kind = "contract call <fn>"` so `_CLASSIFY_TABLE` / `policy._category` route it to the `contract_call` category. | |
 | `routes/base.py` | `RouteProvider` ABC, `Quote` dataclass, `NoRouteError` | |
 | `routes/uniswap_v3.py` | `UniswapV3DirectRoute` — `QuoterV2.quoteExactInputSingle` across fee tiers `[100, 500, 3000, 10000]`, encodes `SwapRouter02.exactInputSingle` | |
 | `routes/zerox.py` | `ZeroExRoute` — 0x aggregator API; honours `WALLET_ZEROX_API_KEY` env | |
@@ -347,6 +373,7 @@ Every write command supports `--account/-a`, `--chain`, `--broadcast/--dry-run`
 | `swap` | `swap <in> <out> <amount> [--via auto/0x/uniswap-v3] [--slippage-bps 50]` | write |
 | `aave` | `positions`, `rates`, `supply`, `withdraw [--max]`, `borrow`, `repay [--max]`, `faucet` | mixed |
 | `lp` | `positions`, `collect`, `remove --percent N`, `mint --fee --tick-lower --tick-upper --amount-a --amount-b`, `increase --amount-a --amount-b` | mixed |
+| `contract` | `call <to> "<fn-sig>" [args…] [--value ETH]` — generic escape hatch; **TTY-only (agent hard-block)**; target must be in `contract_allowlist` | write |
 | `policy` | `init`, `show`, `lint` | local config |
 | `chain` | `list`, `show`, `add`, `remove` | local config |
 | `book`, `watch`, `token` | name / address-book management | local config |
@@ -402,18 +429,41 @@ its description.
    All addresses lowercased; nonce intentionally NOT included (retry with
    refreshed nonce is the same logical op).
 
-3. **Every write builder must call `_simulate` after `estimate_gas` and
-   `_strip_nonce` before returning the `PreparedTx`.** Bypassing either
-   skips revert detection or leaks a stale nonce into broadcast.
+3. **Every write builder must call `core.tx.finalize_tx(w3, tx)` before
+   returning the `PreparedTx`.** `finalize_tx` runs `estimate_gas` (if
+   missing) → `_simulate` → `_strip_nonce` → returns `fee_wei` as one
+   atomic step. Bypassing it skips revert detection AND leaks a stale
+   nonce into broadcast. The underscore-prefixed helpers in `core/tx.py`
+   are internal — new code should not call them directly.
 
 4. **Every new `description.kind` must be classified in BOTH
    `cli/_common.py:_CLASSIFY_TABLE` AND `core/policy.py:_category`.** Missing
    either side: audit/daily-cap blind, OR policy gate degrades to "unknown"
-   and silently allows.
+   and silently allows. `_CLASSIFY_TABLE` is order-sensitive — the
+   `contains "contract call"` row must stay above the `contains "transfer"`
+   / `contains "approve"` rows.
 
 5. **Every protocol with a target contract must have an allowlist branch in
-   `policy.evaluate`.** (Swap router, Aave pool, Aave faucet, NFPM all have
-   one. Adding a new protocol = adding a new branch.)
+   `policy.evaluate`.** (Swap router, Aave pool, Aave faucet, NFPM, generic
+   `contract call` target all have one. Adding a new protocol = adding a
+   new branch.)
+
+5b. **LP funds-in ops are pool-allowlisted, not just NFPM-allowlisted.**
+    `lp_mint` and `lp_increase` must satisfy `(lp_token0_address,
+    lp_token1_address, lp_fee) ∈ Policy.lp_pool_allowlist`. NFPM allowlist
+    is necessary but insufficient — one NFPM address serves every V3 pool,
+    so a compromised agent that controls token inputs can route funds into
+    a counterfeit pool through the legitimate manager. Exit ops
+    (`lp_decrease` / `lp_collect`) intentionally skip this gate so users
+    can exit a pool that was later removed from the allowlist.
+
+5c. **`contract_call` is humans-only by construction.** Agent callers
+    (`caller_kind() == "agent"`) are hard-blocked in `policy.evaluate`
+    regardless of any other config. This is the typed-policy escape hatch
+    — by design no per-op semantic gate exists on this path (no allowance
+    check, no HF guard, no pool match), so allowing agents would be
+    handing them a backdoor around every typed protection. If you want
+    agent access to a specific contract, ship a typed `prepare_*` for it.
 
 6. **Agent callers (`caller_kind() == "agent"`) must:**
    - have `--request-id` (else `missing_request_id`, exit 3)
@@ -450,7 +500,7 @@ its description.
 - **Style:** Look at `tests/test_uniswap_v3_lp.py` for the canonical w3-mock
   builder pattern (`_W3Spec` + `_make_w3_mock`); `tests/test_send.py` for
   the NameError-class guard pattern.
-- **Run:** `uv run pytest tests/` (308 tests, sub-4-second wall time).
+- **Run:** `uv run pytest tests/` (352 tests, sub-4-second wall time).
 - **Coverage of write paths:** at minimum 3 cases per `prepare_*` —
   happy path, allowance/precondition failure, simulate revert.
 - **CLI tests:** use `typer.testing.CliRunner.invoke(app, [...])` with
@@ -475,20 +525,29 @@ want to add `wallet morpho supply <token> <amount>`.
    - read helpers (`get_market_data`, `get_user_position`)
    - `prepare_supply(w3, chain, sender, market, amount_wei) → PreparedTx`
      - Resolve protocol address via `get_protocol_address(chain, "morpho", "blue")`
-     - `allowance` pre-check; raise `InsufficientAllowance`
-     - `_common_fields` → `build_transaction` → `_simulate` → `_strip_nonce`
+     - `check_allowance_or_raise(w3, token, sender, spender, amount_wei)` —
+       no-op when `token.is_native` or `amount_wei == 0`
+     - `_common_fields` → `contract.functions.<fn>(...).build_transaction(base)`
+       (or raw `{to, data, value}` dict)
+     - `fee_wei = finalize_tx(w3, tx)` — single call covers estimate_gas +
+       simulate + strip_nonce + fee calc
      - `description.kind = "morpho supply"` (or similar)
+     - If your op takes slippage, use `core.slippage.apply_slippage_floor`
 2. `src/wallet/core/config.py` — extend Sepolia preset's `protocols` dict
    with `"morpho": {"blue": "0x..."}`. (Mainnet via `~/.wallet/chains.json`.)
 3. `src/wallet/cli/morpho.py` — typer subapp. Mirror `cli/aave.py:supply`.
 4. `src/wallet/cli/app.py` — `app.add_typer(morpho_cli.app, name="morpho")`.
 5. `src/wallet/cli/_common.py:_CLASSIFY_TABLE` — add row for the new
-   `kind` → `(category, machine_kind)`.
+   `kind` → `(category, machine_kind)`. Mind the row order (see
+   security invariant #4).
 6. `src/wallet/core/policy.py:_category` — add branch returning the new
    category.
 7. `src/wallet/core/policy.py:evaluate` — add a contract_allowlist check
    branch for the new category (mirror the `aave_supply` / `lp_mint`
-   branches).
+   branches). If your op moves user funds INTO a pool / market / vault
+   that's distinct from the contract entry point, add a market-allowlist
+   field too (see `lp_pool_allowlist` for the canonical example —
+   invariant #5b).
 8. `src/wallet/storage/idempotency.py:fingerprint` — add any new
    op-differentiating description fields to the canonical JSON.
 9. `tests/test_morpho.py` — protocol unit tests (MagicMock w3).
@@ -501,6 +560,11 @@ want to add `wallet morpho supply <token> <amount>`.
 
 If you find yourself wanting to skip step 5, 6, 7, or 8 — STOP. Those are
 load-bearing for the security model.
+
+**If you can't justify a typed `prepare_*` for the op** (one-off, long-tail,
+human-only), the answer is `wallet contract call` — don't ship a
+ceremonial typed surface just to expose one function. The escape hatch
+exists exactly for that case.
 
 ---
 
