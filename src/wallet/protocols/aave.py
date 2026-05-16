@@ -487,14 +487,12 @@ def resolve_aave_reserve(w3, chain: ChainConfig, query: str) -> AaveReserve:
 
 # Imported lazily to avoid a hard dep when only view helpers are used
 def _prepare_common_imports():
-    from wallet.core.tokens import allowance
-    from wallet.core.tx import PreparedTx, _common_fields, _simulate, _strip_nonce
-    from wallet.protocols.swap import InsufficientAllowance
+    from wallet.core.tokens import InsufficientAllowance, allowance
+    from wallet.core.tx import PreparedTx, _common_fields, finalize_tx
     return (
         PreparedTx,
         _common_fields,
-        _simulate,
-        _strip_nonce,
+        finalize_tx,
         allowance,
         InsufficientAllowance,
     )
@@ -514,7 +512,7 @@ def prepare_supply(
     `wallet swap` allowance-error envelope reuse means agents already know
     how to recover.
     """
-    PreparedTx, _common_fields, _simulate, _strip_nonce, allowance, InsufficientAllowance = (
+    PreparedTx, _common_fields, finalize_tx, allowance, InsufficientAllowance = (
         _prepare_common_imports()
     )
 
@@ -543,9 +541,7 @@ def prepare_supply(
         sender_cs,
         0,  # referralCode — Aave deprecated this; pass 0
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
@@ -583,7 +579,7 @@ def prepare_faucet_mint(
     Mainnet has no equivalent — calling this on a non-testnet chain will
     fail because the faucet address isn't configured.
     """
-    PreparedTx, _common_fields, _simulate, _strip_nonce, _, _ = _prepare_common_imports()
+    PreparedTx, _common_fields, finalize_tx, _, _ = _prepare_common_imports()
 
     sender_cs = Web3.to_checksum_address(sender)
     faucet_addr = Web3.to_checksum_address(
@@ -597,9 +593,7 @@ def prepare_faucet_mint(
         sender_cs,
         amount_wei,
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
@@ -629,10 +623,10 @@ def prepare_withdraw(
 
     Pass `amount_wei = WITHDRAW_MAX_AMOUNT` to withdraw the entire aToken
     balance (Aave convention). Aave reverts when the post-withdraw HF would
-    drop below 1.0, which `_simulate` surfaces as a clean
+    drop below 1.0, which `finalize_tx` surfaces as a clean
     `simulation_reverted` error so the agent doesn't need to predict it.
     """
-    PreparedTx, _common_fields, _simulate, _strip_nonce, _, _ = _prepare_common_imports()
+    PreparedTx, _common_fields, finalize_tx, _, _ = _prepare_common_imports()
 
     sender_cs = Web3.to_checksum_address(sender)
     pool_addr = Web3.to_checksum_address(
@@ -648,9 +642,7 @@ def prepare_withdraw(
         amount_wei,
         sender_cs,
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     is_max = amount_wei == WITHDRAW_MAX_AMOUNT
 
@@ -699,7 +691,7 @@ def prepare_borrow(
     enforce `min_health_factor` before signing, more conservatively than
     Aave's own HF >= 1 chain-level check.
     """
-    PreparedTx, _common_fields, _simulate, _strip_nonce, _, _ = _prepare_common_imports()
+    PreparedTx, _common_fields, finalize_tx, _, _ = _prepare_common_imports()
 
     sender_cs = Web3.to_checksum_address(sender)
     pool_addr = Web3.to_checksum_address(get_protocol_address(chain, "aave_v3", "pool"))
@@ -719,9 +711,7 @@ def prepare_borrow(
         0,                # referralCode
         sender_cs,        # onBehalfOf
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
@@ -755,7 +745,7 @@ def prepare_repay(
     (Aave convention). Repay only improves HF, so no policy HF check needed.
     Requires prior `wallet approve set <token> <pool> <amount>` like supply.
     """
-    PreparedTx, _common_fields, _simulate, _strip_nonce, allowance, InsufficientAllowance = (
+    PreparedTx, _common_fields, finalize_tx, allowance, InsufficientAllowance = (
         _prepare_common_imports()
     )
 
@@ -787,9 +777,7 @@ def prepare_repay(
         AAVE_INTEREST_MODE_VARIABLE,
         sender_cs,
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     is_max = amount_wei == REPAY_MAX_AMOUNT
     return PreparedTx(

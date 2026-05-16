@@ -10,7 +10,8 @@ from web3 import Web3
 from wallet.core.config import ChainConfig
 from wallet.core.tokens import TokenInfo
 from wallet.protocols.routes.base import Quote, RouteProvider
-from wallet.protocols.swap import InsufficientAllowance, prepare_swap
+from wallet.core.tokens import InsufficientAllowance
+from wallet.protocols.swap import prepare_swap
 
 
 SEPOLIA = ChainConfig(

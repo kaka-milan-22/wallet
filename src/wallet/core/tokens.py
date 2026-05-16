@@ -133,6 +133,62 @@ def allowance(w3: Web3, token_address: str, owner: str, spender: str) -> int:
     )
 
 
+class InsufficientAllowance(RuntimeError):
+    """Raised by prepare_* helpers when the sender's ERC-20 allowance to a
+    spender is below the amount the next tx would transfer.
+
+    Carries the data the CLI needs to suggest a corrective `wallet approve set`
+    command (token / spender / current / required) so agents can self-recover
+    rather than re-broadcasting a tx that will revert on-chain.
+    """
+
+    def __init__(
+        self,
+        *,
+        token_symbol: str,
+        token_address: str,
+        spender: str,
+        current_wei: int,
+        required_wei: int,
+    ):
+        self.token_symbol = token_symbol
+        self.token_address = token_address
+        self.spender = spender
+        self.current_wei = current_wei
+        self.required_wei = required_wei
+        super().__init__(
+            f"allowance for {token_symbol} to {spender} is "
+            f"{current_wei} < {required_wei} required"
+        )
+
+
+def check_allowance_or_raise(
+    w3: Web3,
+    token: TokenInfo,
+    owner: str,
+    spender: str,
+    required_wei: int,
+) -> None:
+    """Single source of truth for the pre-broadcast allowance gate.
+
+    Skipped when the token is native (no transferFrom — msg.value flow) or
+    when required_wei == 0. Otherwise reads on-chain allowance once and
+    raises InsufficientAllowance with all the fields the CLI needs to emit
+    a recoverable error envelope.
+    """
+    if token.is_native or required_wei == 0:
+        return
+    current = allowance(w3, token.address, owner, spender)
+    if current < required_wei:
+        raise InsufficientAllowance(
+            token_symbol=token.symbol,
+            token_address=token.address,
+            spender=spender,
+            current_wei=current,
+            required_wei=required_wei,
+        )
+
+
 def resolve_token(
     w3: Web3,
     chain: ChainConfig,

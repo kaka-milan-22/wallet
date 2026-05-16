@@ -10,6 +10,7 @@ from __future__ import annotations
 from web3 import Web3
 
 from wallet.core.config import ChainConfig, get_protocol_address
+from wallet.core.slippage import apply_slippage_floor
 from wallet.core.tokens import TokenInfo
 from wallet.protocols.routes.base import NoRouteError, Quote, RouteProvider
 
@@ -71,13 +72,6 @@ SWAP_ROUTER_V2_ABI = [
 ]
 
 
-def _apply_slippage(amount_out_expected: int, slippage_bps: int) -> int:
-    """Compute amountOutMinimum given an expected output and slippage in bps."""
-    if slippage_bps < 0 or slippage_bps > 10_000:
-        raise ValueError(f"slippage_bps must be in [0, 10000], got {slippage_bps}")
-    return (amount_out_expected * (10_000 - slippage_bps)) // 10_000
-
-
 class UniswapV3DirectRoute(RouteProvider):
     name = "uniswap_v3"
 
@@ -133,7 +127,7 @@ class UniswapV3DirectRoute(RouteProvider):
                 f"on any Uniswap V3 fee tier (tried {FEE_TIERS})"
             )
 
-        amount_out_min = _apply_slippage(best_out, slippage_bps)
+        amount_out_min = apply_slippage_floor(best_out, slippage_bps)
 
         router = w3.eth.contract(address=router_addr, abi=SWAP_ROUTER_V2_ABI)
         data = router.encode_abi(

@@ -22,7 +22,7 @@ from wallet.cli._output import emit, emit_error, info, stdout_console
 from wallet.cli.swap import _resolve_token_or_native
 from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, parse_units
-from wallet.protocols.swap import InsufficientAllowance
+from wallet.core.tokens import InsufficientAllowance
 from wallet.protocols.uniswap_v3_lp import (
     get_positions,
     prepare_collect,

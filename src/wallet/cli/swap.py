@@ -6,12 +6,12 @@ from wallet.cli._common import confirm_and_broadcast, make_web3_or_exit, resolve
 from wallet.cli._output import emit_error
 from wallet.core.config import get_chain
 from wallet.core.rpc import parse_units
-from wallet.core.tokens import TokenInfo, resolve_token
+from wallet.core.tokens import InsufficientAllowance, TokenInfo, resolve_token
 from wallet.protocols.routes.auto import AutoFallbackRoute
 from wallet.protocols.routes.base import NoRouteError
 from wallet.protocols.routes.uniswap_v3 import UniswapV3DirectRoute
 from wallet.protocols.routes.zerox import ZeroExRoute
-from wallet.protocols.swap import InsufficientAllowance, prepare_swap
+from wallet.protocols.swap import prepare_swap
 from wallet.storage.state import load_state
 
 

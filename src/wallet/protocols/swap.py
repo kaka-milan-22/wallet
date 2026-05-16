@@ -16,36 +16,9 @@ from __future__ import annotations
 from web3 import Web3
 
 from wallet.core.config import ChainConfig
-from wallet.core.tokens import TokenInfo, allowance
-from wallet.core.tx import PreparedTx, _common_fields, _simulate, _strip_nonce
+from wallet.core.tokens import TokenInfo, check_allowance_or_raise
+from wallet.core.tx import PreparedTx, _common_fields, finalize_tx
 from wallet.protocols.routes.base import RouteProvider
-
-
-class InsufficientAllowance(RuntimeError):
-    """Raised when the sender's ERC-20 allowance to the router is below amount_in.
-
-    Carries the data needed by the CLI to suggest the corrective `wallet approve set`
-    command.
-    """
-
-    def __init__(
-        self,
-        *,
-        token_symbol: str,
-        token_address: str,
-        spender: str,
-        current_wei: int,
-        required_wei: int,
-    ):
-        self.token_symbol = token_symbol
-        self.token_address = token_address
-        self.spender = spender
-        self.current_wei = current_wei
-        self.required_wei = required_wei
-        super().__init__(
-            f"allowance for {token_symbol} to {spender} is "
-            f"{current_wei} < {required_wei} required"
-        )
 
 
 def prepare_swap(
@@ -65,20 +38,11 @@ def prepare_swap(
     )
 
     # Allowance pre-check (skip for native ETH input — value=msg.value, no transferFrom).
-    # Route on token_in.is_native, NOT symbol: a malicious ERC-20 can return any
-    # symbol() (including the chain's native symbol), so symbol comparison would
-    # let it slip past the allowance check and have value=amount_in_wei sent as
-    # real native ETH. See security_review.md Vuln 1.
-    if not token_in.is_native:
-        current = allowance(w3, token_in.address, sender, quote.spender)
-        if current < amount_in_wei:
-            raise InsufficientAllowance(
-                token_symbol=token_in.symbol,
-                token_address=token_in.address,
-                spender=quote.spender,
-                current_wei=current,
-                required_wei=amount_in_wei,
-            )
+    # Routes on token_in.is_native inside the helper, NOT symbol: a malicious
+    # ERC-20 can return any symbol() including the chain's native symbol, so
+    # symbol comparison would let it slip past the allowance check and have
+    # value=amount_in_wei sent as real native ETH. See security_review.md Vuln 1.
+    check_allowance_or_raise(w3, token_in, sender, quote.spender, amount_in_wei)
 
     base = _common_fields(w3, chain, sender)
     tx = {
@@ -87,10 +51,7 @@ def prepare_swap(
         "value": quote.value,
         "data": quote.data,
     }
-    tx["gas"] = w3.eth.estimate_gas(tx)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,

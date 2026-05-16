@@ -20,6 +20,7 @@ __all__ = [
     "MIN_PRIORITY_GWEI",
     "PreparedTx",
     "broadcast",
+    "finalize_tx",
     "prepare_erc20_approve",
     "prepare_erc20_transfer",
     "prepare_native_transfer",
@@ -87,6 +88,27 @@ def _strip_nonce(tx: dict[str, Any]) -> dict[str, Any]:
     return tx
 
 
+def finalize_tx(w3: Web3, tx: dict[str, Any]) -> int:
+    """Finish a half-built tx and return the estimated fee in wei.
+
+    Steps in order: estimate gas if not already set (handles both the manual
+    `tx = {...}` path and the `contract.functions.x(...).build_transaction()`
+    path, the latter of which pre-fills `gas`); pre-simulate via eth_call to
+    surface reverts before signing; strip nonce so confirm_and_broadcast can
+    re-fetch it at sign-time; return `maxFeePerGas * gas` so the caller's
+    `PreparedTx.estimated_fee_wei` matches what will actually leave the wallet.
+
+    Centralises the four lines every prepare_* used to repeat verbatim. The
+    only good reason to bypass this helper is a tx that legitimately doesn't
+    want pre-simulation (none today).
+    """
+    if "gas" not in tx:
+        tx["gas"] = w3.eth.estimate_gas(tx)
+    _simulate(w3, tx)
+    _strip_nonce(tx)
+    return int(tx["maxFeePerGas"]) * int(tx["gas"])
+
+
 def prepare_native_transfer(
     w3: Web3,
     chain: ChainConfig,
@@ -97,10 +119,7 @@ def prepare_native_transfer(
     tx = _common_fields(w3, chain, sender)
     tx["to"] = Web3.to_checksum_address(recipient)
     tx["value"] = amount_wei
-    tx["gas"] = w3.eth.estimate_gas(tx)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee = tx["maxFeePerGas"] * tx["gas"]
+    fee = finalize_tx(w3, tx)
     return PreparedTx(
         tx=tx,
         estimated_fee_wei=fee,
@@ -132,9 +151,7 @@ def prepare_erc20_transfer(
     tx = contract.functions.transfer(
         Web3.to_checksum_address(recipient), amount
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee = tx["maxFeePerGas"] * tx["gas"]
+    fee = finalize_tx(w3, tx)
     return PreparedTx(
         tx=tx,
         estimated_fee_wei=fee,
@@ -167,9 +184,7 @@ def prepare_erc20_approve(
     tx = contract.functions.approve(
         Web3.to_checksum_address(spender), amount
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee = tx["maxFeePerGas"] * tx["gas"]
+    fee = finalize_tx(w3, tx)
     return PreparedTx(
         tx=tx,
         estimated_fee_wei=fee,

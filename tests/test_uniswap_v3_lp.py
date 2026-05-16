@@ -15,9 +15,12 @@ import pytest
 from web3 import Web3
 
 from wallet.core.config import ChainConfig
-from wallet.core.tokens import TokenInfo, clear_token_info_cache
+from wallet.core.tokens import (
+    InsufficientAllowance,
+    TokenInfo,
+    clear_token_info_cache,
+)
 from wallet.core.uniswap_v3_math import MAX_UINT128
-from wallet.protocols.swap import InsufficientAllowance
 from wallet.protocols.uniswap_v3_lp import (
     NFPM_ABI,
     fetch_position,

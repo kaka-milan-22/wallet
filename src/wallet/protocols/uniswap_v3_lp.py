@@ -23,12 +23,13 @@ from typing import Any
 from web3 import Web3
 
 from wallet.core.config import ChainConfig, get_protocol_address
+from wallet.core.slippage import apply_slippage_floor
 from wallet.core.tokens import (
     TokenInfo,
-    allowance,
+    check_allowance_or_raise,
     fetch_token_info,
 )
-from wallet.core.tx import PreparedTx, _common_fields, _simulate, _strip_nonce
+from wallet.core.tx import PreparedTx, _common_fields, finalize_tx
 from wallet.core.uniswap_v3_math import (
     MAX_UINT128,
     align_to_tick_spacing,
@@ -37,7 +38,6 @@ from wallet.core.uniswap_v3_math import (
     get_tick_at_sqrt_ratio,
     tick_spacing_for_fee,
 )
-from wallet.protocols.swap import InsufficientAllowance
 
 
 # --- ABIs ------------------------------------------------------------------
@@ -284,13 +284,6 @@ def _pool(w3, address: str):
     )
 
 
-def _apply_slippage_floor(amount: int, slippage_bps: int) -> int:
-    """Compute amountMin given an expected amount and slippage in bps."""
-    if slippage_bps < 0 or slippage_bps > 10_000:
-        raise ValueError(f"slippage_bps must be in [0, 10000], got {slippage_bps}")
-    return (amount * (10_000 - slippage_bps)) // 10_000
-
-
 def _sort_token_pair(
     token_a: TokenInfo, amount_a: int, token_b: TokenInfo, amount_b: int
 ) -> tuple[TokenInfo, int, TokenInfo, int]:
@@ -396,9 +389,7 @@ def prepare_collect(
     tx = nfpm.functions.collect(
         (int(token_id), recipient_cs, MAX_UINT128, MAX_UINT128),
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
@@ -462,8 +453,8 @@ def prepare_decrease_liquidity(
     expected_amt0, expected_amt1 = get_amounts_for_liquidity(
         pos.current_sqrt_price_x96, sqrt_a, sqrt_b, liquidity_to_burn
     )
-    amount0_min = _apply_slippage_floor(expected_amt0, slippage_bps)
-    amount1_min = _apply_slippage_floor(expected_amt1, slippage_bps)
+    amount0_min = apply_slippage_floor(expected_amt0, slippage_bps)
+    amount1_min = apply_slippage_floor(expected_amt1, slippage_bps)
 
     deadline = int(time.time()) + int(deadline_seconds_from_now)
 
@@ -475,9 +466,7 @@ def prepare_decrease_liquidity(
     tx = nfpm.functions.decreaseLiquidity(
         (int(token_id), int(liquidity_to_burn), int(amount0_min), int(amount1_min), int(deadline)),
     ).build_transaction(base)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
@@ -509,25 +498,6 @@ def prepare_decrease_liquidity(
 
 
 # --- write: prepare_mint ---------------------------------------------------
-
-
-def _check_allowance_or_raise(
-    w3, token: TokenInfo, sender_cs: str, spender_cs: str, required_wei: int
-) -> None:
-    """Pre-flight allowance gate. Skipped for native ETH inputs (msg.value path)."""
-    if token.is_native:
-        return
-    if required_wei == 0:
-        return
-    current = allowance(w3, token.address, sender_cs, spender_cs)
-    if current < required_wei:
-        raise InsufficientAllowance(
-            token_symbol=token.symbol,
-            token_address=token.address,
-            spender=spender_cs,
-            current_wei=current,
-            required_wei=required_wei,
-        )
 
 
 def _maybe_multicall_with_refund(
@@ -609,11 +579,11 @@ def prepare_mint(
     )
 
     # Pre-flight allowance for each non-native leg.
-    _check_allowance_or_raise(w3, token0, sender_cs, nfpm_addr, amount0_desired)
-    _check_allowance_or_raise(w3, token1, sender_cs, nfpm_addr, amount1_desired)
+    check_allowance_or_raise(w3, token0, sender_cs, nfpm_addr, amount0_desired)
+    check_allowance_or_raise(w3, token1, sender_cs, nfpm_addr, amount1_desired)
 
-    amount0_min = _apply_slippage_floor(amount0_desired, slippage_bps)
-    amount1_min = _apply_slippage_floor(amount1_desired, slippage_bps)
+    amount0_min = apply_slippage_floor(amount0_desired, slippage_bps)
+    amount1_min = apply_slippage_floor(amount1_desired, slippage_bps)
     deadline = int(time.time()) + int(deadline_seconds_from_now)
 
     nfpm = w3.eth.contract(address=nfpm_addr, abi=NFPM_ABI)
@@ -649,10 +619,7 @@ def prepare_mint(
         "value": value_wei,
         "data": calldata,
     }
-    tx["gas"] = w3.eth.estimate_gas(tx)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
@@ -730,11 +697,11 @@ def prepare_increase_liquidity(
         get_protocol_address(chain, "uniswap_v3", "nonfungible_position_manager")
     )
 
-    _check_allowance_or_raise(w3, token0, sender_cs, nfpm_addr, amount0_desired)
-    _check_allowance_or_raise(w3, token1, sender_cs, nfpm_addr, amount1_desired)
+    check_allowance_or_raise(w3, token0, sender_cs, nfpm_addr, amount0_desired)
+    check_allowance_or_raise(w3, token1, sender_cs, nfpm_addr, amount1_desired)
 
-    amount0_min = _apply_slippage_floor(amount0_desired, slippage_bps)
-    amount1_min = _apply_slippage_floor(amount1_desired, slippage_bps)
+    amount0_min = apply_slippage_floor(amount0_desired, slippage_bps)
+    amount1_min = apply_slippage_floor(amount1_desired, slippage_bps)
     deadline = int(time.time()) + int(deadline_seconds_from_now)
 
     nfpm = w3.eth.contract(address=nfpm_addr, abi=NFPM_ABI)
@@ -765,10 +732,7 @@ def prepare_increase_liquidity(
         "value": value_wei,
         "data": calldata,
     }
-    tx["gas"] = w3.eth.estimate_gas(tx)
-    _simulate(w3, tx)
-    _strip_nonce(tx)
-    fee_wei = tx["maxFeePerGas"] * tx["gas"]
+    fee_wei = finalize_tx(w3, tx)
 
     return PreparedTx(
         tx=tx,
