@@ -98,15 +98,19 @@ def _label_for(state: WalletState, address: str) -> str:
 # Adding a new tx type means adding one row here, not editing two parallel ladders.
 _CLASSIFY_TABLE: tuple[tuple[str, str, str, str], ...] = (
     # (match_mode, needle, category, machine_kind)
-    ("exact", "swap",            "swap",          "swap"),
-    ("exact", "aave supply",     "aave_supply",   "aave_supply"),
-    ("exact", "aave withdraw",   "aave_withdraw", "aave_withdraw"),
-    ("exact", "aave faucet",     "aave_faucet",   "aave_faucet"),
-    ("exact", "aave borrow",     "aave_borrow",   "aave_borrow"),
-    ("exact", "aave repay",      "aave_repay",    "aave_repay"),
-    ("exact", "native transfer", "send",          "native_transfer"),
-    ("contains", "approve",      "approve",       "erc20_approve"),
-    ("contains", "transfer",     "send",          "erc20_transfer"),
+    ("exact", "swap",                "swap",          "swap"),
+    ("exact", "aave supply",         "aave_supply",   "aave_supply"),
+    ("exact", "aave withdraw",       "aave_withdraw", "aave_withdraw"),
+    ("exact", "aave faucet",         "aave_faucet",   "aave_faucet"),
+    ("exact", "aave borrow",         "aave_borrow",   "aave_borrow"),
+    ("exact", "aave repay",          "aave_repay",    "aave_repay"),
+    ("exact", "uniswap_v3 lp_mint",     "lp_mint",     "lp_mint"),
+    ("exact", "uniswap_v3 lp_increase", "lp_increase", "lp_increase"),
+    ("exact", "uniswap_v3 lp_decrease", "lp_decrease", "lp_decrease"),
+    ("exact", "uniswap_v3 lp_collect",  "lp_collect",  "lp_collect"),
+    ("exact", "native transfer",     "send",          "native_transfer"),
+    ("contains", "approve",          "approve",       "erc20_approve"),
+    ("contains", "transfer",         "send",          "erc20_transfer"),
 )
 
 
@@ -206,6 +210,27 @@ def _build_data(
     ):
         if key in desc:
             payload[key] = desc[key]
+    # Uniswap V3 LP fields (only present for lp_mint / lp_increase / lp_decrease / lp_collect).
+    # Stringify uint256-sized values so the JSON envelope is JS-safe.
+    for key in (
+        "lp_action", "lp_nft_token_id", "lp_nfpm",
+        "lp_token0_address", "lp_token1_address",
+        "lp_token0_symbol", "lp_token1_symbol",
+        "lp_token0_decimals", "lp_token1_decimals",
+        "lp_fee", "lp_tick_lower", "lp_tick_upper",
+        "lp_slippage_bps", "lp_percent", "lp_recipient",
+    ):
+        if key in desc:
+            payload[key] = desc[key]
+    for key in (
+        "lp_liquidity_wei",
+        "lp_amount0_expected_wei", "lp_amount1_expected_wei",
+        "lp_amount0_desired_wei", "lp_amount1_desired_wei",
+        "lp_amount0_min_wei", "lp_amount1_min_wei",
+        "lp_native_value_wei",
+    ):
+        if key in desc:
+            payload[key] = str(desc[key])
     if "swap_amount_out_expected_wei" in desc:
         out_dec = int(desc.get("swap_token_out_decimals", 18))
         payload["swap_amount_out_expected_wei"] = str(desc["swap_amount_out_expected_wei"])

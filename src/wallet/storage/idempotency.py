@@ -116,6 +116,25 @@ def fingerprint(prepared, chain) -> str:
             # supply USDC vs supply WETH at the same pool.
             "aave_action": desc.get("aave_action"),
             "aave_asset": _norm_addr(desc.get("aave_asset_address")),
+            # Uniswap V3 LP fields. Same lesson as Vuln 2: any input that
+            # changes on-chain effect must contribute to the fingerprint,
+            # else two logically different LP ops (different tokenId, range,
+            # or per-side desired amount) silently replay the first's hash.
+            "lp_action": desc.get("lp_action"),
+            "lp_nft_token_id": (
+                str(desc["lp_nft_token_id"]) if "lp_nft_token_id" in desc else None
+            ),
+            "lp_token0": _norm_addr(desc.get("lp_token0_address")),
+            "lp_token1": _norm_addr(desc.get("lp_token1_address")),
+            "lp_fee": desc.get("lp_fee"),
+            "lp_tick_lower": desc.get("lp_tick_lower"),
+            "lp_tick_upper": desc.get("lp_tick_upper"),
+            "lp_liquidity_wei": str(desc.get("lp_liquidity_wei", "")),
+            "lp_amount0_desired_wei": str(desc.get("lp_amount0_desired_wei", "")),
+            "lp_amount1_desired_wei": str(desc.get("lp_amount1_desired_wei", "")),
+            "lp_amount0_min_wei": str(desc.get("lp_amount0_min_wei", "")),
+            "lp_amount1_min_wei": str(desc.get("lp_amount1_min_wei", "")),
+            "lp_recipient": _norm_addr(desc.get("lp_recipient")),
         },
         sort_keys=True,
         separators=(",", ":"),
