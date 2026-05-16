@@ -52,6 +52,14 @@ _BUILTIN_PRESETS: dict[str, dict] = {
                 "faucet": "0xC959483DBa39aa9E78757139af0e9a2EDEb3f42D",
                 "oracle": "0x2da88497588bf89281816106C7259e31AF45a663",
             },
+            "zerox": {
+                # 0x v2 AllowanceHolder — deterministically deployed to the
+                # same address on every chain 0x supports (CREATE2-pinned).
+                # Used to verify that any `quote.issues.allowance.spender`
+                # returned by api.0x.org matches the contract we expect to
+                # hold approvals; mismatch = compromised quote, refuse to sign.
+                "allowance_holder": "0x0000000000001fF3684f28c67538d4D072C22734",
+            },
         },
     },
 }

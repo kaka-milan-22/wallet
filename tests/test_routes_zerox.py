@@ -17,6 +17,14 @@ from wallet.protocols.routes.zerox import (
 )
 
 
+# 0x v2 AllowanceHolder is deterministically deployed to the same address on
+# every supported chain; the test fixture uses an arbitrary constant standing
+# in for that pinned address. Every well-formed test payload routes both
+# `transaction.to` and `issues.allowance.spender` to this address — the pin
+# behaviour we ship in 1.05 (security_review.md F7) rejects any quote that
+# returns something else.
+HOLDER = "0x" + "33" * 20
+
 CHAIN = ChainConfig(
     name="sepolia",
     chain_id=11155111,
@@ -25,6 +33,7 @@ CHAIN = ChainConfig(
     explorer_tx_url="http://invalid/{tx}",
     native_symbol="ETH",
     builtin_tokens={"WETH": "0x" + "ee" * 20},
+    protocols={"zerox": {"allowance_holder": HOLDER}},
 )
 
 USDC = TokenInfo(symbol="USDC", address="0x" + "11" * 20, decimals=6)
@@ -39,12 +48,18 @@ def _ok_response(payload: dict) -> MagicMock:
     return r
 
 
-def _zerox_quote_payload(*, buy_amount: int, min_buy: int | None = None, spender: str | None = None) -> dict:
+def _zerox_quote_payload(
+    *,
+    buy_amount: int,
+    min_buy: int | None = None,
+    spender: str | None = None,
+    to: str = HOLDER,
+) -> dict:
     return {
         "buyAmount": str(buy_amount),
         "minBuyAmount": str(min_buy if min_buy is not None else buy_amount),
         "transaction": {
-            "to": "0x" + "33" * 20,
+            "to": to,
             "data": "0xdeadbeef",
             "value": "0",
         },
@@ -74,7 +89,7 @@ def test_successful_quote_returns_parsed_fields(monkeypatch):
     monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
     payload = _zerox_quote_payload(
         buy_amount=2 * 10**18, min_buy=199 * 10**16,
-        spender="0x" + "44" * 20,
+        spender=HOLDER,  # pin requires spender == chain's AllowanceHolder
     )
 
     captured: dict = {}
@@ -100,11 +115,12 @@ def test_successful_quote_returns_parsed_fields(monkeypatch):
     assert captured["params"]["sellAmount"] == "1000000"
     assert captured["params"]["slippageBps"] == 50
 
+    from web3 import Web3
     assert q.route_provider == "0x"
     assert "Uniswap_V3" in q.route_description
     assert q.amount_out_expected_wei == 2 * 10**18
     assert q.amount_out_min_wei == 199 * 10**16
-    assert q.spender == "0x" + "44" * 20
+    assert q.spender == Web3.to_checksum_address(HOLDER)
     assert q.data == "0xdeadbeef"
 
 
@@ -211,17 +227,95 @@ def test_missing_transaction_field_raises(monkeypatch):
 
 
 def test_spender_falls_back_to_tx_to_when_no_allowance_issue(monkeypatch):
+    """When 0x omits `issues.allowance` (e.g. native input, already approved),
+    `spender` falls back to `transaction.to` — which under the 1.05 pin is
+    also the AllowanceHolder, so the pin check still passes."""
     monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
-    # No issues.allowance — e.g. native input or already-approved
-    payload = _zerox_quote_payload(buy_amount=10**6)  # spender=None
+    payload = _zerox_quote_payload(buy_amount=10**6)  # spender=None, to=HOLDER
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _ok_response(payload))
 
     q = ZeroExRoute().quote(
         w3=MagicMock(), chain=CHAIN, sender=SENDER,
         token_in=USDC, token_out=WETH, amount_in_wei=10**6, slippage_bps=50,
     )
-    # Falls back to transaction.to as spender
-    assert q.spender == "0x" + ("33" * 20).upper()[:40].lower().rjust(40, "0") or len(q.spender) == 42
-    # Just confirm it's a valid checksum address derived from "0x" + "33"*20
     from web3 import Web3
-    assert q.spender == Web3.to_checksum_address("0x" + "33" * 20)
+    assert q.spender == Web3.to_checksum_address(HOLDER)
+
+
+# --- 1.05: AllowanceHolder pin (security_review.md F7) ----------------------
+
+
+def test_quote_rejected_when_spender_does_not_match_pinned_holder(monkeypatch):
+    """Compromised api.0x.org returns `spender` = a router the user already
+    approved for another protocol (e.g. stale UniswapV3Router approval). The
+    pin must reject before this reaches policy / signing."""
+    monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
+    rogue_spender = "0x" + "ba" * 20  # NOT the AllowanceHolder
+    payload = _zerox_quote_payload(
+        buy_amount=10**6, spender=rogue_spender, to=HOLDER,
+    )
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _ok_response(payload))
+
+    with pytest.raises(NoRouteError, match="unexpected spender"):
+        ZeroExRoute().quote(
+            w3=MagicMock(), chain=CHAIN, sender=SENDER,
+            token_in=USDC, token_out=WETH, amount_in_wei=10**6, slippage_bps=50,
+        )
+
+
+def test_quote_rejected_when_tx_to_does_not_match_pinned_holder(monkeypatch):
+    """Sibling attack: compromised quote routes tx.to to a router the user
+    has a stale approval on; spender field happens to match the
+    AllowanceHolder. The pin on `to` catches this."""
+    monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
+    rogue_to = "0x" + "ba" * 20
+    payload = _zerox_quote_payload(
+        buy_amount=10**6, spender=HOLDER, to=rogue_to,
+    )
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _ok_response(payload))
+
+    with pytest.raises(NoRouteError, match="routes tx to"):
+        ZeroExRoute().quote(
+            w3=MagicMock(), chain=CHAIN, sender=SENDER,
+            token_in=USDC, token_out=WETH, amount_in_wei=10**6, slippage_bps=50,
+        )
+
+
+def test_quote_rejected_when_chain_has_no_allowance_holder_configured(monkeypatch):
+    """Fail-closed: any chain without an explicit AllowanceHolder entry must
+    refuse 0x routing rather than silently regressing to the pre-1.05
+    behaviour where any spender was accepted."""
+    monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
+    unconfigured_chain = ChainConfig(
+        name="some-unsupported-chain", chain_id=42,
+        rpc_url="http://invalid", explorer_api_url="http://invalid",
+        explorer_tx_url="http://invalid/{tx}", native_symbol="ETH",
+        builtin_tokens={"WETH": "0x" + "ee" * 20},
+        # no protocols.zerox.allowance_holder
+    )
+    payload = _zerox_quote_payload(buy_amount=10**6, spender=HOLDER, to=HOLDER)
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _ok_response(payload))
+
+    with pytest.raises(NoRouteError, match="zerox.allowance_holder"):
+        ZeroExRoute().quote(
+            w3=MagicMock(), chain=unconfigured_chain, sender=SENDER,
+            token_in=USDC, token_out=WETH, amount_in_wei=10**6, slippage_bps=50,
+        )
+
+
+def test_pin_check_is_case_insensitive(monkeypatch):
+    """0x returns lowercase hex; our pinned config has checksum casing. Match
+    must succeed regardless of source casing."""
+    monkeypatch.setenv("WALLET_ZEROX_API_KEY", "test-key")
+    payload = _zerox_quote_payload(
+        buy_amount=10**6, spender=HOLDER.lower(), to=HOLDER.upper().replace("0X", "0x"),
+    )
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _ok_response(payload))
+
+    # Should NOT raise
+    q = ZeroExRoute().quote(
+        w3=MagicMock(), chain=CHAIN, sender=SENDER,
+        token_in=USDC, token_out=WETH, amount_in_wei=10**6, slippage_bps=50,
+    )
+    from web3 import Web3
+    assert q.spender == Web3.to_checksum_address(HOLDER)

@@ -23,6 +23,15 @@ from wallet.core.config import ChainConfig
 from wallet.core.tokens import TokenInfo
 from wallet.protocols.routes.base import NoRouteError, Quote, RouteProvider
 
+# 0x v2 routes ERC-20 approvals through a single AllowanceHolder contract per
+# chain. We pin the expected spender at chain-config time so a compromised
+# api.0x.org response (or DNS-level MITM that survives our TLS handshake)
+# can't redirect approvals to an attacker-controlled router that the user
+# happens to have allowlisted for some other protocol. See
+# `docs/security_review.md` F7.
+_ZEROX_PROTOCOL_KEY = "zerox"
+_ZEROX_ALLOWANCE_HOLDER_FIELD = "allowance_holder"
+
 ZEROX_QUOTE_URL = "https://api.0x.org/swap/allowance-holder/quote"
 ZEROX_NATIVE_SENTINEL = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 ZEROX_TIMEOUT_SECONDS = 15
@@ -109,6 +118,42 @@ class ZeroExRoute(RouteProvider):
         allowance_issue = issues.get("allowance") or {}
         spender_raw = allowance_issue.get("spender") or to_addr
         spender = Web3.to_checksum_address(spender_raw)
+
+        # Pin both `to_addr` and `spender` to the chain-configured AllowanceHolder.
+        # In 0x v2 allowance-holder mode every legitimate quote routes through
+        # the same AllowanceHolder for both fields. A compromised api.0x.org
+        # could otherwise return:
+        #   - `spender` = a router the user already approved for another
+        #     protocol (e.g. UniswapV3Router from a stale approval) so the
+        #     wallet's allowance pre-check passes silently; OR
+        #   - `to_addr` = that same router with malicious calldata, draining
+        #     funds via the existing approval the user forgot to revoke.
+        # Pinning both catches either variant. Fail-closed: missing chain
+        # config = no 0x route on this chain.
+        pinned_raw = chain.protocols.get(_ZEROX_PROTOCOL_KEY, {}).get(
+            _ZEROX_ALLOWANCE_HOLDER_FIELD
+        )
+        if not pinned_raw:
+            raise NoRouteError(
+                f"0x: chain {chain.name!r} has no `zerox.allowance_holder` "
+                f"configured. Add the AllowanceHolder address to chains.json "
+                f"(or the built-in preset) before routing through 0x."
+            )
+        pinned = Web3.to_checksum_address(pinned_raw)
+        if to_addr.lower() != pinned.lower():
+            raise NoRouteError(
+                f"0x: quote routes tx to {to_addr}, expected chain-pinned "
+                f"AllowanceHolder {pinned}. Refusing to sign — api.0x.org "
+                f"may be compromised, the AllowanceHolder migrated, or the "
+                f"chain config is out of date."
+            )
+        if spender.lower() != pinned.lower():
+            raise NoRouteError(
+                f"0x: quote returned unexpected spender {spender}; expected "
+                f"chain-pinned AllowanceHolder {pinned}. Refusing to sign — "
+                f"this protects against quotes that claim approval is needed "
+                f"for a contract the user already trusts for other protocols."
+            )
 
         # Human-readable route summary from the 0x response's route.fills
         route_parts: list[str] = []
