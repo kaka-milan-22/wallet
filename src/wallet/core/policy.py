@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 from wallet.core.config import atomic_write_text, data_root
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from wallet.core.tokens import MAX_UINT256
 from wallet.storage.state import WalletState
@@ -33,6 +33,51 @@ __all__ = [
     "policy_path",
     "save_policy",
 ]
+
+
+# Valid Uniswap V3 fee tiers in basis-points × 100 (matches FEE_TIERS in
+# protocols/routes/uniswap_v3.py). Any pool-allowlist entry outside this set
+# is a config bug — there are no pools at other fees.
+_V3_FEE_TIERS = frozenset({100, 500, 3000, 10000})
+
+
+class LpPoolAllowEntry(BaseModel):
+    """One entry in `lp_pool_allowlist` — a specific (token0, token1, fee) pool.
+
+    V3 invariant: token0 address (lowercased hex) must be < token1 address.
+    NFPM rejects any other ordering, so storing entries the other way around
+    would be a silent dead allowlist row. We enforce on load.
+    """
+
+    token0: str
+    token1: str
+    fee: int
+
+    @field_validator("token0", "token1")
+    @classmethod
+    def _checksum_address(cls, v: str) -> str:
+        v = v.strip()
+        if not (v.startswith("0x") and len(v) == 42):
+            raise ValueError(f"not a 0x-prefixed 20-byte address: {v!r}")
+        return v.lower()
+
+    @field_validator("fee")
+    @classmethod
+    def _known_fee_tier(cls, v: int) -> int:
+        if int(v) not in _V3_FEE_TIERS:
+            raise ValueError(
+                f"fee {v} is not a known V3 tier {sorted(_V3_FEE_TIERS)}"
+            )
+        return int(v)
+
+    @model_validator(mode="after")
+    def _token0_lt_token1(self) -> "LpPoolAllowEntry":
+        if self.token0 >= self.token1:
+            raise ValueError(
+                f"V3 requires token0 < token1; got {self.token0} >= {self.token1}. "
+                f"Sort by address (lowercase hex) before adding to the allowlist."
+            )
+        return self
 
 
 class Policy(BaseModel):
@@ -58,6 +103,17 @@ class Policy(BaseModel):
 
     sentinel_blocklist: list[str] = Field(default_factory=list)
     """Hard deny — overrides any allowlist match. For known scams / drainers."""
+
+    lp_pool_allowlist: list[LpPoolAllowEntry] = Field(default_factory=list)
+    """(token0, token1, fee) pools acceptable for `lp_mint` / `lp_increase`.
+
+    NFPM-in-contract_allowlist already gates the manager contract, but a single
+    NFPM serves every V3 pool — without this list, an attacker who can choose
+    the (token0, token1, fee) inputs (e.g. a compromised agent) can route funds
+    into a counterfeit pool through the legitimate NFPM. Empty list = no LP
+    mint/increase allowed (fail-closed, same pattern as contract_allowlist).
+    Exit ops (`lp_decrease` / `lp_collect`) are NOT gated by this — they pull
+    funds OUT of a pool the user already owns NFT positions in."""
 
     min_health_factor: float | None = None
     """When set, borrow / withdraw is blocked if the estimated post-op
@@ -341,6 +397,38 @@ def evaluate(
             return Decision(
                 allowed=False,
                 reason="lp-nfpm-not-in-contract-allowlist",
+                severity="block",
+            )
+
+    # --- 3h. uniswap_v3 LP funds-IN ops: (token0, token1, fee) must be in
+    # lp_pool_allowlist. NFPM allowlist alone is insufficient because the same
+    # NFPM serves every pool — an agent that can choose token addresses can
+    # route funds into a scam pool through the legitimate manager. Only
+    # enforced on ops that move funds INTO a pool (mint / increase); exit ops
+    # (decrease / collect) operate on a position the user already holds and
+    # don't need this gate.
+    if category in ("lp_mint", "lp_increase"):
+        t0 = (desc.get("lp_token0_address") or "").lower()
+        t1 = (desc.get("lp_token1_address") or "").lower()
+        fee_raw = desc.get("lp_fee")
+        try:
+            fee = int(fee_raw) if fee_raw is not None else None
+        except (TypeError, ValueError):
+            fee = None
+        if not t0 or not t1 or fee is None:
+            return Decision(
+                allowed=False,
+                reason="lp-pool-fields-missing-from-description",
+                severity="block",
+            )
+        pool_allowed = any(
+            e.token0 == t0 and e.token1 == t1 and e.fee == fee
+            for e in policy.lp_pool_allowlist
+        )
+        if not pool_allowed:
+            return Decision(
+                allowed=False,
+                reason=f"lp-pool-not-in-allowlist:{t0}/{t1}/{fee}",
                 severity="block",
             )
 
