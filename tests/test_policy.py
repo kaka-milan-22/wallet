@@ -622,6 +622,68 @@ def test_lp_pool_entry_rejects_unsorted_pair():
         Policy(lp_pool_allowlist=[{"token0": _T1, "token1": _T0, "fee": 500}])
 
 
+# --- generic contract_call (escape-hatch) policy ----------------------------
+
+
+def _cc_pt(to="0x" + "44" * 20, fn="transfer", value=0):
+    """Shape a fake contract-call prepared tx the way `prepare_contract_call`
+    would. Description must carry `kind` starting with `contract call`."""
+    return FakePrepared(
+        kind=f"contract call {fn}", to=to,
+        amount_wei=value, amount_unit="ETH", amount_decimals=18,
+        cc_function_signature=f"{fn}(address,uint256)",
+        cc_function_name=fn,
+        cc_calldata="0xdeadbeef",
+        cc_value_wei=value,
+    )
+
+
+def test_contract_call_hard_blocked_for_agent(isolated_files):
+    """Agent-mode policy floor: typed surface is curated; generic escape
+    hatch must never be reachable without a human in the loop."""
+    save_policy(Policy(contract_allowlist=["0x" + "44" * 20]))
+    d = evaluate(_cc_pt(), _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason == "contract-call-not-allowed-for-agent"
+
+
+def test_contract_call_tty_allowed_when_target_in_allowlist(isolated_files):
+    target = "0x" + "44" * 20
+    save_policy(Policy(contract_allowlist=[target]))
+    d = evaluate(_cc_pt(to=target), _state_with(), "tty")
+    assert d.allowed
+
+
+def test_contract_call_tty_blocked_when_target_not_in_allowlist(isolated_files):
+    save_policy(Policy(contract_allowlist=[]))  # nothing allowed
+    d = evaluate(_cc_pt(), _state_with(), "tty")
+    assert not d.allowed
+    assert d.reason == "contract-call-target-not-in-contract-allowlist"
+
+
+def test_contract_call_value_still_capped_by_max_per_tx(isolated_files):
+    """Generic path doesn't escape native value caps — msg.value flows
+    through amount_wei/unit=ETH and hits max_per_tx like any other ETH op."""
+    target = "0x" + "44" * 20
+    save_policy(Policy(
+        contract_allowlist=[target],
+        max_per_tx={"ETH": "0.005"},
+    ))
+    d = evaluate(_cc_pt(to=target, value=10**18), _state_with(), "tty")  # 1 ETH
+    assert not d.allowed
+    assert "max-per-tx-exceeded:ETH:0.005" in d.reason
+
+
+def test_contract_call_does_not_misclassify_as_transfer(isolated_files):
+    """A function literally named `transfer(...)` must not slip into the
+    `send` category and dodge the agent-block. Classify-table order matters."""
+    save_policy(Policy(recipient_allowlist=[], contract_allowlist=[]))
+    # If misclassified as send, reason would be `recipient-not-in-allowlist`.
+    d = evaluate(_cc_pt(fn="transfer"), _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason == "contract-call-not-allowed-for-agent"
+
+
 # --- schema validation -------------------------------------------------------
 
 

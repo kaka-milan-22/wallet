@@ -98,6 +98,11 @@ def _label_for(state: WalletState, address: str) -> str:
 # Adding a new tx type means adding one row here, not editing two parallel ladders.
 _CLASSIFY_TABLE: tuple[tuple[str, str, str, str], ...] = (
     # (match_mode, needle, category, machine_kind)
+    # `contract call <fn>` is the generic escape hatch. It MUST match before
+    # the "contains transfer" / "contains approve" entries below — a function
+    # named `transfer(...)` or `approve(...)` would otherwise be misclassified
+    # as a typed send / approve and dodge the contract_call agent-block.
+    ("contains", "contract call",    "contract_call", "contract_call"),
     ("exact", "swap",                "swap",          "swap"),
     ("exact", "aave supply",         "aave_supply",   "aave_supply"),
     ("exact", "aave withdraw",       "aave_withdraw", "aave_withdraw"),
@@ -202,6 +207,14 @@ def _build_data(
     ):
         if key in desc:
             payload[key] = desc[key]
+    # Contract-call (generic escape hatch) fields. Keep calldata in the
+    # envelope so agents and humans can both diff exactly what's being signed.
+    for key in (
+        "cc_function_signature", "cc_function_name",
+        "cc_args", "cc_calldata", "cc_value_wei",
+    ):
+        if key in desc:
+            payload[key] = desc[key]
     # Aave-specific fields (only present for aave_supply / aave_withdraw)
     for key in (
         "aave_action", "aave_asset_address", "aave_pool",
@@ -280,6 +293,21 @@ def _render_preview(state: WalletState, chain: ChainConfig):
             table.add_row("token", d["token_address"])
 
         table.add_row("amount", f"{d['amount']} {d['unit']}")
+
+        # Generic contract-call preview rows. This is the escape-hatch
+        # category — show the signature, decoded args, and raw calldata so
+        # the human signer has everything needed to diff against intent.
+        if d.get("kind") == "contract_call":
+            table.add_row("function", d.get("cc_function_signature", "?"))
+            for i, arg in enumerate(d.get("cc_args", []) or []):
+                val = arg.get("value")
+                if isinstance(val, list):
+                    val = "[" + ", ".join(str(x) for x in val) + "]"
+                table.add_row(f"  arg[{i}] ({arg.get('type', '?')})", str(val))
+            cd = d.get("cc_calldata", "")
+            if cd:
+                shown = cd if len(cd) <= 138 else cd[:66] + " … " + cd[-66:]
+                table.add_row("calldata", shown)
 
         # Swap-specific preview rows
         if d.get("kind") == "swap":

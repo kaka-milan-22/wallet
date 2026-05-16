@@ -116,6 +116,12 @@ def fingerprint(prepared, chain) -> str:
             # supply USDC vs supply WETH at the same pool.
             "aave_action": desc.get("aave_action"),
             "aave_asset": _norm_addr(desc.get("aave_asset_address")),
+            # Contract-call (generic escape hatch): two different fns or
+            # different args to the same target would otherwise collapse to
+            # the same fingerprint (kind = "contract call <name>" + same to +
+            # same value). Hash full calldata into the fingerprint so the
+            # fingerprint uniquely identifies the actual on-chain effect.
+            "cc_calldata": desc.get("cc_calldata"),
             # Uniswap V3 LP fields. Same lesson as Vuln 2: any input that
             # changes on-chain effect must contribute to the fingerprint,
             # else two logically different LP ops (different tokenId, range,

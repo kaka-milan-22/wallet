@@ -160,8 +160,14 @@ def default_policy() -> Policy:
 
 
 def _category(prepared) -> str:
-    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'aave_*' / 'lp_*' / 'unknown'."""
+    """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'aave_*' /
+    'lp_*' / 'contract_call' / 'unknown'."""
     kind = prepared.description.get("kind", "")
+    # `contract call <fn>` is the typed-policy escape hatch — match by prefix
+    # since the suffix varies per function. Routed through a dedicated
+    # category so we can hard-block it for agent callers below.
+    if kind.startswith("contract call"):
+        return "contract_call"
     if kind == "swap":
         return "swap"
     if kind == "aave supply":
@@ -314,6 +320,27 @@ def evaluate(
     # --- 1. sentinel blocklist (highest priority) ---
     if target and target.lower() in {a.lower() for a in policy.sentinel_blocklist}:
         return Decision(allowed=False, reason="sentinel-blocklisted", severity="block")
+
+    # --- 1b. contract_call category: agent-block + contract_allowlist floor ---
+    # This is the typed-policy escape hatch. Per-op semantic gates (HF check,
+    # pool allowlist, swap router allowlist, deny_unlimited_approve, etc.) do
+    # NOT exist on this path — the wallet has no semantic model of what the
+    # calldata does. So we hard-block for agent callers (humans-only) and
+    # require the target contract to be explicitly allowlisted.
+    if category == "contract_call":
+        if caller == "agent":
+            return Decision(
+                allowed=False,
+                reason="contract-call-not-allowed-for-agent",
+                severity="block",
+            )
+        targets = {a.lower() for a in policy.contract_allowlist}
+        if target and target.lower() not in targets:
+            return Decision(
+                allowed=False,
+                reason="contract-call-target-not-in-contract-allowlist",
+                severity="block",
+            )
 
     # --- 2. approve-specific checks ---
     if category == "approve":
