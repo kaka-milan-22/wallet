@@ -10,20 +10,29 @@ What you get today (Sepolia tested end-to-end):
 - **Accounts** — BIP-39 HD wallet; mnemonic encrypted in `agent-vault`,
   retrieved into the signing process via Unix FIFO (kernel pipe, never on disk).
 - **Transfers** — ETH + ERC-20 send, ERC-20 approve / allowance / revoke.
-- **Swap** — `wallet swap` via 0x aggregator with automatic fallback to direct
-  Uniswap V3.
+- **Swap** — `wallet swap` via 0x aggregator (spender + `transaction.to` pinned
+  to the chain-known AllowanceHolder, defending against quote-tampering attacks)
+  with automatic fallback to direct Uniswap V3.
 - **Lending** — `wallet aave supply / withdraw / borrow / repay` against Aave V3,
   with a configurable `min_health_factor` policy gate that blocks risky ops
   *before* Aave's chain-level HF >= 1 revert.
+- **Liquidity** — `wallet lp mint / increase / remove / collect / positions` for
+  Uniswap V3 LP NFTs, gated by an `lp_pool_allowlist` policy that names which
+  `(token0, token1, fee)` pools the agent may touch. Rebalance is a
+  compose-of-primitives, not a built-in strategy (see
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
 - **On-chain faucet** — `wallet aave faucet` mints testnet mock tokens without
   needing a browser wallet.
+- **Sepolia operational notes** — testnet footguns (two USDC reserves, Aave
+  supply caps, LP mint ratio math, NFPM/pool allowlist schema) collected in
+  [`docs/TESTING.md`](docs/TESTING.md).
 
 Designed around four safety layers, each catches a different failure mode:
 
 | Layer | Catches |
 |---|---|
 | **skill** (`docs/skills/wallet-agent.skill.md`) | Agent guidance: how to call, what to never do |
-| **policy** (`~/.wallet/policy.json`) | Hard pre-broadcast block: spending caps, recipient & contract allowlists, unlimited-approve deny, `min_health_factor`, sentinel blocklist |
+| **policy** (`~/.wallet/policy.json`) | Hard pre-broadcast block: spending caps, recipient / contract / LP-pool allowlists, unlimited-approve deny, `min_health_factor`, sentinel blocklist |
 | **idempotency** (`~/.wallet/idempotency.json`) | Retry safety: same `--request-id` returns the cached `tx_hash` instead of double-spending |
 | **audit** (`~/.wallet/audit.log`) | Append-only JSON-lines record of every signing attempt (broadcast, rejected, replayed); not exposed via any CLI read |
 
@@ -163,6 +172,30 @@ uv run wallet aave repay USDC 50 --broadcast --yes             # repay partial
 uv run wallet aave repay USDC --max --broadcast --yes          # repay entire variable debt
 # Set `min_health_factor` in policy.json to block borrow/withdraw before HF drops
 # below your comfort line (Aave's own threshold is 1.0; setting 1.5+ gives margin).
+
+# Uniswap V3 LP — position management
+uv run wallet lp positions                                     # list NFT positions + in-range status
+uv run wallet lp positions --account second
+uv run wallet lp mint ETH USDC --fee 500 \
+    --tick-lower -887270 --tick-upper 887270 \
+    --amount-a 0.0037 --amount-b 50 \
+    --slippage-bps 300                                         # dry-run; full-range USDC/WETH
+uv run wallet lp mint ETH USDC --fee 500 \
+    --tick-lower -887270 --tick-upper 887270 \
+    --amount-a 0.0037 --amount-b 50 --slippage-bps 300 \
+    --broadcast --yes --request-id "$(uuidgen)"
+uv run wallet lp increase <tokenId> --amount-a 0.001 --amount-b 10 --broadcast --yes ...
+uv run wallet lp remove <tokenId> --percent 100 --broadcast --yes ...   # burn liquidity
+uv run wallet lp collect <tokenId> --broadcast --yes ...                 # sweep fees + freed principal
+# NFPM (0x1238...CDA52 on Sepolia) goes in policy.contract_allowlist.
+# Every pool you touch goes in policy.lp_pool_allowlist as a
+# {"token0": "0x...", "token1": "0x...", "fee": N} object — NOT a pool address
+# string. token0 < token1 lowercased (V3 invariant; loader rejects otherwise).
+# The CLI does NOT compute amount0/amount1 for you — wrong ratio reverts with
+# "Price slippage check". See docs/TESTING.md "LP mint amount ratio".
+
+# Generic contract call (TTY-only escape hatch — agent callers blocked)
+uv run wallet contract call --help
 
 # History
 uv run wallet history                       # default account, native + contract calls
@@ -383,6 +416,13 @@ Default policy starts with caps but **empty allowlists** — agents are denied
 until you explicitly add recipients/contracts you trust. This is intentional:
 wide-open default + opt-out is unsafe.
 
+`lp_pool_allowlist` has a non-obvious schema: each entry is an object
+`{"token0": "0x...", "token1": "0x...", "fee": N}`, not a pool address. The
+NFPM serves every V3 pool, so allowlisting NFPM alone in `contract_allowlist`
+is necessary but not sufficient — an attacker who can shape the (token0,
+token1, fee) inputs could otherwise route funds into a counterfeit pool. See
+[`docs/TESTING.md`](docs/TESTING.md) for the Sepolia USDC/WETH 0.05% example.
+
 ### Install the agent skill (Claude Code)
 
 ```sh
@@ -397,13 +437,15 @@ request-id on every broadcast, never `--unlimited` / `--policy-bypass`).
 
 | Operation | Agent | TTY |
 |---|---|---|
-| `balance` / `history` / `account list` | ✓ | ✓ |
-| `send` / `approve set` / `revoke` (dry-run) | ✓ | ✓ |
-| `send` / `approve` (broadcast) | ✓ if within policy + has `--request-id` | ✓ |
+| `balance` / `portfolio` / `history` / `account list` / `aave positions` / `lp positions` | ✓ | ✓ |
+| `send` / `approve set` / `revoke` / `swap` / `aave *` / `lp *` (dry-run) | ✓ | ✓ |
+| `send` / `approve` / `swap` / `aave *` (broadcast) | ✓ if within policy + has `--request-id` | ✓ |
+| `lp mint / increase / remove / collect` (broadcast) | ✓ if pool in `lp_pool_allowlist` + has `--request-id` | ✓ |
 | `--policy-bypass` | rejected | warns, then proceeds |
 | `--unlimited` approve | rejected by default policy | rejected by default policy |
 | `account create` / `import` | refuse — runs in TTY only | ✓ (mnemonic shown to terminal) |
 | `policy init` | refuse | ✓ |
+| `contract call` (generic escape hatch) | refuse | ✓ |
 
 ## Tests
 
