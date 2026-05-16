@@ -115,6 +115,25 @@ def test_fingerprint_ignores_address_casing():
     assert fingerprint(a, FakeChain()) == fingerprint(b, FakeChain())
 
 
+def test_fingerprint_differs_on_contract_call_calldata():
+    """Two different generic contract-call ops to the same target with the
+    same msg.value (e.g. `pause()` vs `unpause()`) must NOT collapse — the
+    calldata is what determines the on-chain effect."""
+    base = dict(
+        kind="contract call pause",
+        amount_wei=0, amount_unit="ETH",
+    )
+    a = FakePrepared(**{
+        "from": "0x" + "11" * 20, "to": "0x" + "44" * 20,
+        "cc_calldata": "0xaabbccdd", **base,
+    })
+    b = FakePrepared(**{
+        "from": "0x" + "11" * 20, "to": "0x" + "44" * 20,
+        "cc_calldata": "0xeeff0011", **base,
+    })
+    assert fingerprint(a, FakeChain()) != fingerprint(b, FakeChain())
+
+
 def test_lookup_returns_none_when_unknown(isolated_store):
     assert lookup("never-seen", "fp") is None
 

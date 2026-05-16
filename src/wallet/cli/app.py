@@ -8,6 +8,7 @@ from wallet.cli import account as account_cli
 from wallet.cli import approve as approve_cli
 from wallet.cli import book as book_cli
 from wallet.cli import chain as chain_cli
+from wallet.cli import contract as contract_cli
 from wallet.cli import lp as lp_cli
 from wallet.cli import policy as policy_cli
 from wallet.cli import token as token_cli
@@ -33,6 +34,7 @@ app.add_typer(policy_cli.app, name="policy")
 app.add_typer(aave_cli.app, name="aave")
 app.add_typer(lp_cli.app, name="lp")
 app.add_typer(chain_cli.app, name="chain")
+app.add_typer(contract_cli.app, name="contract")
 app.command("balance")(balance_cmd)
 app.command("portfolio")(portfolio_cmd)
 app.command("send")(send_cmd)
