@@ -512,6 +512,116 @@ def test_aave_repay_does_not_need_hf_check(isolated_files):
     assert d.allowed
 
 
+# --- uniswap_v3 LP pool allowlist --------------------------------------------
+
+# Canonical V3 pair (token0 < token1 by lowercase address, as NFPM requires).
+_T0 = "0x" + "11" * 20  # lowercased; canonical
+_T1 = "0x" + "22" * 20
+_NFPM = "0x" + "ab" * 20
+
+
+def _lp_mint_pt(*, token0=_T0, token1=_T1, fee=500, nfpm=_NFPM):
+    return FakePrepared(
+        kind="uniswap_v3 lp_mint", to=nfpm,
+        amount_wei=10**6, amount_unit="USDC", amount_decimals=6,
+        lp_token0_address=token0, lp_token1_address=token1, lp_fee=fee,
+    )
+
+
+def test_lp_mint_blocked_when_pool_allowlist_empty(isolated_files):
+    save_policy(Policy(contract_allowlist=[_NFPM]))  # NFPM ok, but no pools
+    d = evaluate(_lp_mint_pt(), _state_with(), "agent")
+    assert not d.allowed
+    assert d.reason.startswith("lp-pool-not-in-allowlist:")
+
+
+def test_lp_mint_allowed_when_pool_in_allowlist(isolated_files):
+    save_policy(Policy(
+        contract_allowlist=[_NFPM],
+        lp_pool_allowlist=[{"token0": _T0, "token1": _T1, "fee": 500}],
+    ))
+    d = evaluate(_lp_mint_pt(), _state_with(), "agent")
+    assert d.allowed
+    assert d.severity == "allow"
+
+
+def test_lp_mint_blocked_when_fee_tier_mismatches(isolated_files):
+    save_policy(Policy(
+        contract_allowlist=[_NFPM],
+        lp_pool_allowlist=[{"token0": _T0, "token1": _T1, "fee": 500}],
+    ))
+    # Same pair, different fee tier — distinct pool, distinct contract.
+    d = evaluate(_lp_mint_pt(fee=3000), _state_with(), "agent")
+    assert not d.allowed
+    assert "lp-pool-not-in-allowlist" in d.reason
+
+
+def test_lp_mint_match_is_case_insensitive_on_addresses(isolated_files):
+    """Description carries checksum-cased addresses; allowlist stores lowercase.
+    Match must succeed despite the casing difference."""
+    save_policy(Policy(
+        contract_allowlist=[_NFPM],
+        lp_pool_allowlist=[{"token0": _T0, "token1": _T1, "fee": 500}],
+    ))
+    pt = _lp_mint_pt(
+        token0=_T0.upper().replace("0X", "0x"),
+        token1=_T1.upper().replace("0X", "0x"),
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_lp_increase_uses_same_pool_allowlist(isolated_files):
+    save_policy(Policy(
+        contract_allowlist=[_NFPM],
+        lp_pool_allowlist=[{"token0": _T0, "token1": _T1, "fee": 500}],
+    ))
+    pt = FakePrepared(
+        kind="uniswap_v3 lp_increase", to=_NFPM,
+        amount_wei=10**6, amount_unit="USDC", amount_decimals=6,
+        lp_token0_address=_T0, lp_token1_address=_T1, lp_fee=500,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_lp_decrease_not_gated_by_pool_allowlist(isolated_files):
+    """Exit ops pull funds OUT of pools the user already holds NFTs in;
+    requiring pool_allowlist would prevent exiting a pool that was later
+    removed from the allowlist, which is the opposite of what we want."""
+    save_policy(Policy(contract_allowlist=[_NFPM]))  # no pools allowed
+    pt = FakePrepared(
+        kind="uniswap_v3 lp_decrease", to=_NFPM,
+        amount_wei=0, amount_unit="USDC", amount_decimals=6,
+        lp_token0_address=_T0, lp_token1_address=_T1, lp_fee=500,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_lp_collect_not_gated_by_pool_allowlist(isolated_files):
+    save_policy(Policy(contract_allowlist=[_NFPM]))
+    pt = FakePrepared(
+        kind="uniswap_v3 lp_collect", to=_NFPM,
+        amount_wei=0, amount_unit="fees", amount_decimals=0,
+    )
+    d = evaluate(pt, _state_with(), "agent")
+    assert d.allowed
+
+
+def test_lp_pool_entry_rejects_bad_fee_tier():
+    """Schema-level fail-fast: stops config bugs landing in policy.json."""
+    with pytest.raises(ValueError, match="not a known V3 tier"):
+        Policy(lp_pool_allowlist=[{"token0": _T0, "token1": _T1, "fee": 1234}])
+
+
+def test_lp_pool_entry_rejects_unsorted_pair():
+    """V3 invariant: token0 < token1. NFPM would reject the swapped tuple
+    silently, leaving a dead allowlist row."""
+    with pytest.raises(ValueError, match="V3 requires token0 < token1"):
+        Policy(lp_pool_allowlist=[{"token0": _T1, "token1": _T0, "fee": 500}])
+
+
 # --- schema validation -------------------------------------------------------
 
 
