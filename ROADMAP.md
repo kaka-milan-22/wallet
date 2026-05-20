@@ -2,15 +2,21 @@
 
 ## Current state
 
-Phase 1 + agent-callable hardening complete on Sepolia. Four merged commits:
+Phase 1 + Phase 2 DeFi primitives + agent-callable hardening shipped on
+Sepolia. Full surface verified end-to-end:
 
-- `dc881a7` Phase 1 wallet (HD account / send / approve / history / book / watch / token)
-- `736de1d` FIFO transport for mnemonic — kernel pipe, plaintext never on disk
-- `466f098` Agent abuse defence — policy + idempotency + audit + skill
-- `5cd7f95` Agent-friendly output — `--json` / `--quiet` / `--explain` (envvar-driven)
+- **Account / transfer / approve / history / book / watch / token** (Phase 1)
+- **Swap** (Uniswap V3 direct + 0x aggregator + auto-fallback; auto-unwrap
+  WETH→native-ETH on output)
+- **Aave V3** supply / withdraw / borrow / repay / faucet + positions / rates
+- **Uniswap V3 LP** positions / mint / increase / decrease / collect
+- **Generic contract call** escape hatch (TTY-only; agent hard-block)
+- **Stuck-tx recovery**: `wallet tx pending / cancel / replace` — EIP-1559
+  mempool replacement, `outcome=superseded` race resolution, audit recovery
+  fields. Verified on Sepolia (see `docs/wallet-sepolia-mainnet-rehearsal-report.md`).
 
-92 unit tests green; end-to-end verified on Sepolia (real signing, real broadcast,
-idempotent replay, policy block, FIFO secret transit, audit log).
+Releases `1.01` → `1.06` track this; see `CHANGELOG.md` for the per-tag diff
+and `git log` for commit-level detail. ~385 unit tests green.
 
 The architecture is fully chain-agnostic: swapping the RPC URL and registering a
 new chain in `core/config.py` produces a working wallet on any EVM-compatible
@@ -67,8 +73,9 @@ Suggested mainnet `policy.json` starter (edit before use):
 
 | Gap | Why it matters | Sketch |
 |---|---|---|
-| **`require_private_rpc` policy enforcement** | Trust-but-verify: even if operator sets the right RPC URL today, a future config drift could route broadcasts back to public mempool without anyone noticing. | Add `require_private_rpc: bool` to `Policy`. `policy.evaluate` rejects broadcast when caller's RPC URL hostname matches a configurable public-RPC blocklist (publicnode, Infura HTTPS, etc.). |
-| **`wallet policy verify` command** | A typo in `recipient_allowlist` or `contract_allowlist` is a permanent funds loss. Manual review of a JSON file is unreliable. | New CLI subcommand: for each allowlist entry, fetch contract metadata from Etherscan (verified contract name, deployer, source-code hash) and display a confirmation table. TTY-only. Optionally caches the contract verification timestamp inside policy.json. |
+| **`require_private_rpc` policy enforcement** | Trust-but-verify: even if operator sets the right RPC URL today, a future config drift could route broadcasts back to public mempool without anyone noticing. | Add `require_private_rpc: bool` to `Policy`. `policy.evaluate` rejects broadcast when caller's RPC URL hostname matches a configurable public-RPC blocklist (publicnode, Infura HTTPS, etc.). **Plan written:** see `docs/plan-mev-protection-and-policy-verify.md`. |
+| **`wallet policy verify` command** | A typo in `recipient_allowlist` or `contract_allowlist` is a permanent funds loss. Manual review of a JSON file is unreliable. | New CLI subcommand: for each allowlist entry, fetch contract metadata from Etherscan (verified contract name, deployer, source-code hash) and display a confirmation table. TTY-only. Optionally caches the contract verification timestamp inside policy.json. **Plan written:** see `docs/plan-mev-protection-and-policy-verify.md`. |
+| ~~**Stuck-tx recovery** (`wallet tx pending / cancel / replace`)~~ | ~~Mainnet base-fee spikes can leave txs pending for hours; nonce occupation blocks all subsequent ops.~~ | **Shipped in 1.06.** See `docs/plan-stuck-tx-recovery.md` and `CHANGELOG.md` `[1.06]` for the design and verification. |
 | **Multi-RPC fallback + cross-check** | Single RPC = SPOF. A malicious / compromised RPC can spoof balances or censor broadcasts. | `chains.json` accepts `rpc_urls: [...]` array. Critical reads (balance, nonce, fee history) consensus across N=2 endpoints; mismatch logged + warned. Broadcast tries primary, falls back to next on `rpc_error`. |
 | **agent-vault binary integrity** | `shutil.which("agent-vault")` follows PATH. Any `agent-vault` shim earlier in PATH could exfiltrate every secret on first call. | Pin absolute path in `~/.wallet/config.json` plus sha256 verification on every wallet startup. Fail loudly on mismatch. |
 | **Tx simulation (Tenderly / forked node)** | `eth_call` doesn't catch MEV, frontrunning, or state changes between simulation and execution. Critical for swaps and complex DeFi. | Optional Tenderly API integration: simulate tx in a forked-state context, surface gas / state-diff / revert reason / asset changes before user confirms. Free tier covers low volume. |
@@ -87,17 +94,23 @@ Suggested mainnet `policy.json` starter (edit before use):
 
 ---
 
-## Phase 2 — DeFi protocols (architecturally ready, not yet implemented)
+## Phase 2 — DeFi protocols
 
-Entry point planned: a new `src/wallet/protocols/` directory alongside `core/`,
-each protocol module producing unsigned txs that flow through the existing
-`core/tx.py` → `confirm_and_broadcast` pipeline.
+Shipped (entry point `src/wallet/protocols/`, each protocol module produces
+unsigned txs that flow through `core/tx.py` → `confirm_and_broadcast`):
+
+| Module | Status | Notes |
+|---|---|---|
+| `protocols/swap.py` + `routes/{auto,zerox,uniswap_v3}.py` | **Shipped** (`1.02` / `1.05`) | 0x aggregator + Uniswap V3 direct with auto-fallback. Slippage cap, allowance pre-check, AllowanceHolder pinning, auto-unwrap WETH→ETH on native output. |
+| `protocols/aave.py` | **Shipped** (`1.03`) | Aave V3 supply / withdraw / borrow / repay / faucet. HF-projection in preview; `min_health_factor` policy gate. |
+| `protocols/uniswap_v3_lp.py` | **Shipped** (`1.04`) | NFPM positions / mint / increase / decrease / collect. Native ETH wraps action in `multicall([action, refundETH])` for atomic refund. |
+| `protocols/contract_call.py` | **Shipped** (`1.03`) | Generic escape hatch. TTY-only; agent hard-block. Allowlist-gated. |
+
+Future protocol candidates (no plan written; in priority order):
 
 | Module | Scope | Notes |
 |---|---|---|
-| `protocols/swap.py` | DEX aggregator (0x or 1inch). `wallet swap <from> <to> <amount> [--slippage-bps N]`. | Required: MEV-protected RPC, slippage cap from `policy.json`, multi-step proposal (`approve` + `swap`) with single user confirmation. |
-| `protocols/aave.py` | Aave V3 supply / withdraw / borrow / repay. `wallet aave supply USDC 100`. | Health-factor monitoring + liquidation-line warning baked into preview. |
-| `protocols/lido.py` | Lido staking — `wallet stake 0.5` (deposits to stETH) and `wallet unstake`. | Simplest DeFi entry; minimal new state. |
+| `protocols/lido.py` | Lido staking — `wallet stake 0.5` / `wallet unstake`. | Simplest DeFi extension; minimal new state. |
 | `protocols/yearn.py` | ERC-4626 vault deposits. | Per-strategy risk parameters in policy. |
 | `protocols/pendle.py` | Pendle PT/YT positions. | Complex; later. |
 

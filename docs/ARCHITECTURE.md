@@ -10,8 +10,8 @@
 
 `wallet` is an **AI-agent-native EVM CLI wallet** written in Python 3.13. It
 exposes single on-chain primitives (send / approve / swap / Aave
-supply-withdraw-borrow-repay / Uniswap V3 LP positions-mint-increase-remove-collect)
-as `wallet <cmd>` subcommands, plus a **TTY-only generic escape hatch**
+supply-withdraw-borrow-repay / Uniswap V3 LP positions-mint-increase-remove-collect
+/ stuck-tx pending-cancel-replace) as `wallet <cmd>` subcommands, plus a **TTY-only generic escape hatch**
 (`wallet contract call <to> <fn-sig> [args…]`) for long-tail protocols that
 don't have a typed surface. Every write call passes through a four-layer
 safety stack (skill guidance → policy gate → idempotency → audit log) so an
@@ -74,12 +74,14 @@ wallet/
 │   │   ├── aave.py lp.py                         # protocol command groups
 │   │   ├── contract.py                            # generic `wallet contract call` (TTY-only escape hatch)
 │   │   ├── policy.py chain.py book.py watch.py   # config / address book
-│   │   └── token.py
+│   │   ├── token.py
+│   │   └── tx.py                                  # stuck-tx recovery: pending / cancel / replace
 │   ├── core/                   # protocol-agnostic primitives
 │   │   ├── config.py          # ChainConfig, data_root, atomic_write_text, _tighten_data_root
 │   │   ├── rpc.py             # make_web3 + chainId handshake, call_with_retry, redact_url, parse/format_units
 │   │   ├── tokens.py          # ERC20_ABI, TokenInfo (with is_native flag), fetch_token_info, allowance, InsufficientAllowance, check_allowance_or_raise
-│   │   ├── tx.py              # PreparedTx + _common_fields + finalize_tx (estimate-gas + simulate + strip-nonce + fee_wei) + broadcast
+│   │   ├── tx.py              # PreparedTx + _common_fields + finalize_tx (estimate-gas + simulate + strip-nonce + fee_wei) + broadcast; InsufficientFundsError when sender can't cover value + gas
+│   │   ├── tx_replace.py      # PendingTx + prepare_cancel / prepare_replacement / list_pending — EIP-1559 mempool replacement at a pinned nonce
 │   │   ├── slippage.py        # apply_slippage_floor — one source of truth for amount * (10000 - bps) / 10000
 │   │   ├── signer.py          # sign_transaction wrapping eth-account; reads mnemonic via FIFO
 │   │   ├── hd.py              # BIP-39/44 derivation; DerivedAccount with repr=False on private_key
@@ -186,6 +188,7 @@ Rule families inside `evaluate()`:
 10. `max_per_tx` (per symbol)
 11. `max_per_day` (per symbol, summed from `audit.log` entries dated UTC today)
 12. first-send warn / block
+13. **tx-recovery (`tx_cancel`, `tx_replace`)**: self-send cancel bypasses `recipient_allowlist` only when `description.is_self_send_for_cancel=True` AND `to == from` AND `amount_wei == 0` (any deviation is treated as an attacker-forged label and blocked); `tx_replace` delegates to the original op's category so the replacement faces the same allowlist / cap / HF gates the original did.
 
 Fail-closed: missing `policy.json` → `no-policy-configured-run-wallet-policy-init`, no agent op can proceed.
 
@@ -204,12 +207,18 @@ Agent callers without `--request-id` are blocked (`missing_request_id`). TTY cal
 ### 4.4 Audit log (forensics)
 `src/wallet/storage/audit.py`. JSONL at `data_root() / "audit.log"`, mode
 `0o600`, append-only. One line per signing attempt with outcome ∈
-`{broadcast, rejected, replayed_idempotent, user_aborted, user_aborted_after_warn}`.
+`{broadcast, rejected, replayed_idempotent, user_aborted, user_aborted_after_warn, superseded}`.
+`superseded` is the benign race outcome for `wallet tx cancel/replace` when
+the original tx mined first (`nonce too low` from the RPC — see §5).
 
 Schema fields written by `cli/_common.py:_audit_event`: `ts` (auto, UTC ISO),
 `chain`, `from`, `to`, `spender`, `kind` (category), `amount_wei`, `unit`,
 `token_address`, `nonce`, `gas`, `hash`, `caller`, `request_id`,
-`policy_decision`, `outcome`.
+`policy_decision`, `outcome`. **Stuck-tx recovery rows additionally
+emit `recovery` (`"cancel"` / `"replace"`), `old_tx_hash` (the original
+broadcast that's being superseded), and `original_kind` (the kind of the
+op being replaced, e.g. `"swap"`) so a cancel/replace is distinguishable
+from a regular 0-value self-send in the log.**
 
 Read-only by design — no CLI command exposes audit contents. The file is for
 local forensics + the `max_per_day` policy computation.
@@ -245,7 +254,13 @@ follows this exact sequence; the differences are confined to the
            "tx is ready for signing" — never bypass.
         f. return PreparedTx(tx, fee_wei, description={kind, from, to, ...})
         ↓
-3.  cli/_common.py:confirm_and_broadcast(w3, state, chain, sender, prepared, dry_run, yes, policy_bypass, request_id):
+3.  cli/_common.py:confirm_and_broadcast(w3, state, chain, sender, prepared, dry_run, yes, policy_bypass, request_id, preserve_nonce=False):
+        # preserve_nonce=True is used only by `wallet tx cancel/replace` —
+        # it keeps the stuck nonce on the prepared tx instead of refreshing,
+        # because the whole point of replacement is to pin to that nonce.
+        # On that path, an RPC `nonce too low` after broadcast is mapped to
+        # outcome=superseded (the original landed first) — a benign race
+        # outcome, not an rpc_error.
         if dry_run:
             emit envelope with data.phase="preview"; return
         render preview in rich mode
@@ -315,7 +330,7 @@ Notes for new contributors:
 | `uniswap_v3_lp.py` | Reads: `get_positions`, `fetch_position`. Writes: `prepare_collect`, `prepare_decrease_liquidity`, `prepare_mint`, `prepare_increase_liquidity`. Native ETH path wraps the action call in NFPM `multicall([action, refundETH])` so unused ETH bounces back atomically. Token order auto-sorted to (token0 < token1). Tick misalignment raises (no silent rounding). Slippage minimums via `core.slippage.apply_slippage_floor`; allowance pre-checks via `core.tokens.check_allowance_or_raise`. | |
 | `contract_call.py` | Generic escape hatch: `parse_function_signature`, `coerce_arg`, `build_calldata`, `prepare_contract_call(w3, chain, sender, to, fn_sig, args, value_wei)`. Supports simple types + 1D arrays; tuples explicitly rejected with a "use typed `prepare_*`" hint. No token resolution, no allowance check, no slippage — intentionally bare since this path has no semantic policy depth. `kind = "contract call <fn>"` so `_CLASSIFY_TABLE` / `policy._category` route it to the `contract_call` category. | |
 | `routes/base.py` | `RouteProvider` ABC, `Quote` dataclass, `NoRouteError` | |
-| `routes/uniswap_v3.py` | `UniswapV3DirectRoute` — `QuoterV2.quoteExactInputSingle` across fee tiers `[100, 500, 3000, 10000]`, encodes `SwapRouter02.exactInputSingle` | |
+| `routes/uniswap_v3.py` | `UniswapV3DirectRoute` — `QuoterV2.quoteExactInputSingle` across fee tiers `[100, 500, 3000, 10000]`, encodes `SwapRouter02.exactInputSingle`. **When `token_out.is_native`, the encoded calldata is a `multicall([exactInputSingle(recipient=ADDRESS_THIS), unwrapWETH9(amountMin, user)])` so the user receives native ETH instead of WETH** — without this, swap-to-ETH leaves WETH in the user's account and an agent that follows up with `wallet send X ETH` underflows. | |
 | `routes/zerox.py` | `ZeroExRoute` — 0x aggregator API; honours `WALLET_ZEROX_API_KEY` env | |
 | `routes/auto.py` | `AutoFallbackRoute` — tries 0x first (best mainnet liquidity), falls back to direct UniV3 (Sepolia / no API key) | |
 
@@ -377,6 +392,7 @@ Every write command supports `--account/-a`, `--chain`, `--broadcast/--dry-run`
 | `policy` | `init`, `show`, `lint` | local config |
 | `chain` | `list`, `show`, `add`, `remove` | local config |
 | `book`, `watch`, `token` | name / address-book management | local config |
+| `tx` | `pending`, `cancel <nonce>`, `replace <nonce>` — stuck-tx recovery via EIP-1559 mempool replacement. `cancel` is a 0-value self-send at the pinned nonce with bumped fees; `replace` re-broadcasts the original calldata. Both flow through `confirm_and_broadcast(preserve_nonce=True)`. | mixed |
 | `history` | `history [--n N]` (Etherscan v2) | read |
 
 Output discipline:
@@ -388,7 +404,11 @@ Error codes (enumerable; branch on `code`, not `reason`): `validation_error`,
 `policy_block`, `idempotency_mismatch`, `not_found`, `rpc_error`,
 `vault_error`, `simulation_reverted`, `aborted`, `missing_request_id`,
 `confirmation_required`, `tty_required`, `no_route`,
-`insufficient_allowance`.
+`insufficient_allowance`, `insufficient_funds`, `superseded`.
+`insufficient_funds` is emitted when `finalize_tx` can't estimate gas
+because the sender's balance < `value + gas * maxFeePerGas` (replaces a
+raw web3.py traceback). `superseded` is the recovery-path equivalent of
+"already settled" — see §4.4 and the `tx` row in the command catalog.
 
 ---
 

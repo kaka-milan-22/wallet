@@ -357,7 +357,8 @@ WALLET_JSON=1 wallet send second 0.0001 --broadcast --yes --request-id "$(uuidge
 Stable error codes: `validation_error`, `policy_block`,
 `idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
 `simulation_reverted`, `aborted`, `missing_request_id`,
-`confirmation_required`, `tty_required`, `no_route`, `insufficient_allowance`.
+`confirmation_required`, `tty_required`, `no_route`,
+`insufficient_allowance`, `insufficient_funds`, `superseded`.
 
 **stderr is never polluted** by JSON output, so `wallet --json X | jq`
 always works. `--explain` (or `WALLET_EXPLAIN=1`) dumps policy /
@@ -393,6 +394,41 @@ mode each tx came from).
 
 ---
 
+## 9b. Stuck-tx recovery
+
+When a broadcast sits in mempool unconfirmed (base-fee spiked above its
+`maxFeePerGas`, or priority too low), `wallet tx` provides three commands
+that work directly on the EIP-1559 mempool replacement protocol — same
+mechanism MetaMask / Rabby surface as "Cancel" / "Speed Up":
+
+```sh
+wallet tx pending                              # list local broadcasts with no receipt yet
+wallet tx cancel <nonce>  [--speedup-pct N]    # dry-run by default; preview the 0-value self-send
+wallet tx cancel <nonce> --broadcast --request-id $(uuidgen)
+wallet tx replace <nonce> --broadcast --request-id $(uuidgen)   # re-send original calldata, bumped gas
+```
+
+Mechanics: both build a new tx with same `from` + same `nonce` and gas
+bumped to `max(old × 1.10, base_fee × 2 + new_priority)` so it clears the
+EIP-1559 110% replacement floor AND current chain pricing. `cancel` is a
+0-value self-send (the original never lands); `replace` rebroadcasts the
+original `(to, value, data, gas)` recovered from the RPC.
+
+Both flow through the standard `confirm_and_broadcast` pipeline so policy
+/ idempotency / audit gate the recovery the same way they gate a fresh
+write. Race outcomes are first-class:
+
+- Replacement lands first → original is displaced, audit logs `recovery: cancel/replace` + `old_tx_hash` + `original_kind`.
+- Original lands first → RPC returns `nonce too low`; envelope emits `code: superseded`, `reason: original_landed_first`, exit code 0. Idempotency cache records `outcome=superseded` so an agent retrying the same `request_id` gets the cached race outcome instead of a double-broadcast.
+
+Policy: `tx cancel` bypasses `recipient_allowlist` (you're sending to
+yourself) but only when `description.is_self_send_for_cancel=True` AND
+`to == from` AND `amount_wei == 0` — any deviation is treated as an
+attacker-forged label and blocked. `tx replace` delegates to the original
+op's category so the replacement faces the same gates the original did.
+
+---
+
 ## 10. What's NOT in scope (yet)
 
 See [`ROADMAP.md`](../ROADMAP.md). Deferred items the wallet **deliberately**
@@ -405,8 +441,6 @@ does not do today:
 - **WalletConnect / browser dApp injection** — by design. Use MetaMask if
   you need to interact with web dApps; this wallet talks to contracts /
   aggregator APIs directly.
-- **Stuck-tx replace / cancel** — mainnet base-fee spikes can leave txs
-  pending for hours; ROADMAP Tier 2.
 - **Multi-RPC consensus reads** — single-RPC SPOF risk; ROADMAP Tier 2.
 - **Permit2 / EIP-712 typed-data signing** — 0x v2 supports it but our
   policy explicitly denies unlimited approves, which is what Permit2

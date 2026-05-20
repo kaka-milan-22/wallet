@@ -124,7 +124,9 @@ For the full command tree see [Daily commands](#daily-commands) below.
 - **Transfers** — ETH + ERC-20 send, ERC-20 approve / allowance / revoke
 - **Swap** — `wallet swap` via 0x aggregator (spender + `transaction.to`
   pinned to the chain-known AllowanceHolder, defending against
-  quote-tampering attacks) with automatic fallback to direct Uniswap V3
+  quote-tampering attacks) with automatic fallback to direct Uniswap V3.
+  When the output is native ETH, the Uniswap V3 route emits a multicall
+  with `unwrapWETH9` so the user receives real ETH instead of WETH
 - **Lending** — `wallet aave supply / withdraw / borrow / repay` against
   Aave V3, with a configurable `min_health_factor` policy gate that blocks
   risky ops *before* Aave's chain-level HF >= 1 revert
@@ -440,7 +442,15 @@ WALLET_JSON=1 wallet balance --token USDC | jq .
 **Error codes** (machine-enumerable): `validation_error`, `policy_block`,
 `idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
 `simulation_reverted`, `aborted`, `missing_request_id`,
-`confirmation_required`, `tty_required`, `no_route`, `insufficient_allowance`.
+`confirmation_required`, `tty_required`, `no_route`,
+`insufficient_allowance`, `insufficient_funds`, `superseded`.
+
+`insufficient_funds` is emitted when `wallet send` (or any `prepare_*`
+path) can't estimate gas because the sender's balance < value + gas fee
+— replaces a raw web3.py traceback with a typed JSON envelope.
+`superseded` is the recovery-path equivalent of "already settled" —
+`wallet tx cancel/replace` raises it when the original tx mines before
+the replacement lands (race lost, no-op).
 
 **`swap` envelope** (additional fields under `data`):
 
@@ -543,6 +553,8 @@ request-id on every broadcast, never `--unlimited` / `--policy-bypass`).
 | `send` / `approve set` / `revoke` / `swap` / `aave *` / `lp *` (dry-run) | ✓ | ✓ |
 | `send` / `approve` / `swap` / `aave *` (broadcast) | ✓ if within policy + has `--request-id` | ✓ |
 | `lp mint / increase / remove / collect` (broadcast) | ✓ if pool in `lp_pool_allowlist` + has `--request-id` | ✓ |
+| `tx pending` (read-only) | ✓ | ✓ |
+| `tx cancel / replace` (broadcast) | ✓ if within policy + has `--request-id` | ✓ |
 | `--policy-bypass` | rejected | warns, then proceeds |
 | `--unlimited` approve | rejected by default policy | rejected by default policy |
 | `account create` / `import` | refuse — runs in TTY only | ✓ (mnemonic shown to terminal) |

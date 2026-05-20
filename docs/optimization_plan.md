@@ -10,6 +10,8 @@
 
 ## Tier 0 — 立即修复（Critical，肉眼可见的 bug）
 
+> **Status (2026-05-21)**: Tier 0 三项全部已在主线落地 — `send.py` 已 import `make_web3_or_exit` 并有 `tests/test_send.py` 烟雾覆盖；`hd.py` 的 `private_key: bytes = field(repr=False)` 生效；`audit.py` 默认 `0o600` 并对旧 `0o644` 文件做了启动期迁移。本节保留作为历史依据。
+
 ### 0.1 `wallet send` 命令运行时 NameError
 - 文件：`src/wallet/cli/send.py:34`
 - 现状：调用 `make_web3_or_exit(cfg, command="send")`，但第 6 行 import 列表里没有它（同级的 `approve.py:6` 是正确写法）。
@@ -34,6 +36,7 @@
 - 文件：`src/wallet/core/tx.py:60-69`（`_common_fields`）
 - 现状：`nonce` 是在构造 PreparedTx 时一次性读取，dry-run → broadcast 之间任何并发 tx 都会导致 nonce 复用或 gap。Agent 工作流中两个 `send` 命令几乎同时执行就会撞车。
 - 修复：把 nonce 的获取下沉到签名前（`confirm_and_broadcast` 即将调用 `sign_transaction` 之前），prepare 阶段不写入 `nonce` 字段；这样 dry-run preview 也不需要承诺 nonce。需要同时小改 `_simulate` / `estimate_gas` 路径让 nonce 缺省 → web3 会用 `pending` 自动填，预演不受影响。
+- **已落地（2026-05-16，1.01）**：`finalize_tx` 现在 `_strip_nonce()`，`confirm_and_broadcast` 在签名前用 `pending` 重读 nonce。**Cross-ref**：`wallet tx replace / cancel`（1.06，`core/tx_replace.py`）显式接管 nonce 用于覆盖卡住的 pending tx，走的是 `confirm_and_broadcast(preserve_nonce=True)` 路径——后续如对 nonce 模型再做重构需保证 explicit-nonce 路径仍然 honored。
 
 ### 1.2 `approve --unlimited` 没有显眼警告
 - 文件：`src/wallet/cli/approve.py:60-71`

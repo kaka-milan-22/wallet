@@ -23,7 +23,8 @@ output** — it is not a stable API.
 Error `code` values are enumerable: `validation_error`, `policy_block`,
 `idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
 `simulation_reverted`, `aborted`, `missing_request_id`, `confirmation_required`,
-`tty_required`. Branch on these, not on `reason` text.
+`tty_required`, `no_route`, `insufficient_allowance`, `insufficient_funds`,
+`superseded`. Branch on these, not on `reason` text.
 
 For debugging only, add `--explain` or `WALLET_EXPLAIN=1`. Decision details
 go to **stderr** so stdout JSON stays clean.
@@ -56,6 +57,7 @@ wallet book list             | jq '.data.entries'
 wallet watch list            | jq '.data.entries'
 wallet policy show           | jq '.data.policy'
 wallet info                  | jq .
+wallet tx pending            | jq '.data.pending[] | {hash:.tx_hash, nonce, age_sec}'   # read-only; see "Recovering a stuck broadcast"
 
 # Aave V3 read-only (Phase 2 PR3)
 wallet aave positions        | jq '.data.summary'                                   # totals + HF
@@ -127,6 +129,56 @@ Workflow EVERY time:
 7. **If `.ok == false`**, show the user `.error` and `.reason` verbatim. Use
    the error code → action table below to suggest the right next step.
 
+   Note: same-`request-id` retry handles RPC failures **before** the tx hit
+   the mempool. If a tx already broadcast but is sitting unconfirmed (low
+   fee, base-fee spike), use `wallet tx replace / cancel` — see "Recovering
+   a stuck broadcast" below. Never re-broadcast the same logical op with a
+   new `--request-id`.
+
+## Recovering a stuck broadcast
+
+A successful broadcast may still sit in mempool unconfirmed (priority too
+low, base-fee spiked above its `maxFeePerGas`). The nonce is occupied, so
+**every subsequent op from the same account is queued behind it**. Use
+`wallet tx`:
+
+```sh
+wallet tx pending --account <name>                     # list local unconfirmed txs
+wallet tx cancel <nonce> --broadcast --request-id "$(uuidgen)"   # free the nonce
+wallet tx replace <nonce> --broadcast --request-id "$(uuidgen)"  # re-send original, bumped gas
+```
+
+How it works:
+
+- `cancel` is a **0-value self-send** at the same nonce with gas bumped to
+  `max(old × 1.10, base_fee × 2 + bumped_priority)` — clears the EIP-1559
+  110% replacement floor AND current chain pricing. The original never
+  lands; the nonce is consumed by a no-op.
+- `replace` recovers the original `(to, value, data, gas)` via
+  `eth.getTransaction(cached_hash)` and rebroadcasts at the same nonce
+  with bumped fees. Use this when you wanted the operation to happen but
+  it priced itself out.
+
+Race outcomes are first-class — handle both:
+
+- **Replacement wins**: envelope `outcome=broadcast`, `tx_hash=<new>`,
+  audit adds `recovery: cancel|replace` + `old_tx_hash: <original>`.
+- **Original landed first**: envelope `ok: false`, `code: superseded`,
+  `reason: original_landed_first`. Exit code is 0 (benign race outcome,
+  not failure). Idempotency cache records `outcome=superseded` so a
+  retry with same `--request-id` gets the cached race outcome — no
+  double-broadcast.
+
+Policy: `tx cancel` bypasses `recipient_allowlist` (you're sending to
+yourself) only when `to == from` AND `amount_wei == 0`; any deviation is
+treated as a forged label and blocked. `tx replace` delegates to the
+original op's category — a replacement of an `aave borrow` faces the
+same HF / allowlist gates the original did.
+
+Discovery: `wallet tx pending` lists only broadcasts originally made
+through THIS wallet (sourced from local `idempotency.json`). It cannot
+recover txs broadcast from MetaMask or another wallet.
+
 ## Forbidden
 
 These commands either bear secrets or weaken the security model. **Do not
@@ -177,6 +229,12 @@ Notes on `--via auto`:
 **Native ETH** input doesn't need `approve` (router wraps via msg.value).
 **ERC-20** input requires prior `wallet approve set <token> <router> <amount>`.
 
+**Native ETH output**: when `token_out` is the chain's native symbol (e.g.
+`ETH`) on the `uniswap-v3` route, the wallet emits a multicall with
+`unwrapWETH9` so the user receives real ETH, not WETH. You don't need a
+follow-up unwrap step — checking the user's ETH balance after the swap
+will show the swap proceeds delivered as native.
+
 If you get `error: insufficient_allowance`, the envelope's `data` includes
 a `suggested_command` field — just run that, then retry the swap with the
 same logical params (use a NEW request-id for the approve, then ANOTHER
@@ -202,6 +260,8 @@ Common policy errors and how to react:
 | `swap-router-not-in-contract-allowlist` | swap router (e.g. Uniswap V3) not allowed | Ask user to add the router address to `contract_allowlist` |
 | `no_route` | No DEX pool has liquidity for this pair/amount | Try a smaller amount; try a different output token; on Sepolia liquidity is thin |
 | `insufficient_allowance` | ERC-20 not approved for the swap router yet | Run the `suggested_command` from envelope.data, then retry |
+| `insufficient_funds` | Sender balance < value + gas fee | Reduce the amount, or fund the account; never retry with the same amount |
+| `superseded` | `tx cancel/replace` race — original landed first | Benign; the operation already settled on chain. No retry needed |
 | `first-send-blocked-for-agent` | Recipient never seen before | Ask user to confirm the address and add to book or watch |
 | `missing-request-id-for-agent` | You forgot `--request-id` | Generate a fresh uuid and retry |
 | `idempotency-mismatch` | You reused a request-id for different params | Generate a fresh uuid; never reuse |

@@ -15,11 +15,77 @@ captured in `git log` — `1.01` is the first formal release tag.
 
 ## [Unreleased]
 
-Nothing pending. Next planned tracks are tracked outside the CHANGELOG:
+Next planned tracks:
 - **Ledger / hardware-wallet integration** — the documented mainnet > $1.5k
   gating item; see `docs/why_hard_wallet.md`.
+- **MEV-protected broadcast** + **`wallet policy verify`** — planned, see
+  `docs/plan-mev-protection-and-policy-verify.md`.
 - **Strategy daemon** — separate repo, consumes the now-stable primitive
   surface; out of scope per `.claude/skills/wallet-scope-litmus/SKILL.md`.
+
+---
+
+## [1.06] — 2026-05-21
+
+Stuck-tx recovery (`wallet tx pending / cancel / replace`) + swap-to-ETH
+auto-unwrap + `insufficient_funds` typed error envelope. See
+`docs/plan-stuck-tx-recovery.md` for the design and
+`docs/wallet-sepolia-mainnet-rehearsal-report.md` for the end-to-end
+Sepolia verification.
+
+### Added
+- **`wallet tx pending`** — lists local broadcasts (from `idempotency.json`)
+  that have no receipt yet. Filters out txs whose nonce has been consumed
+  on chain by a replacement (`eth.getTransactionCount(account, 'latest')`).
+- **`wallet tx cancel <nonce>`** — 0-value self-send at the stuck nonce with
+  gas bumped to `max(old × 1.10, base_fee × 2 + bumped_priority)` so the
+  new tx clears both the EIP-1559 110% replacement floor and current
+  chain pricing. `--speedup-pct N` overrides the 25% bump on top of 110%.
+- **`wallet tx replace <nonce>`** — re-broadcasts the original tx's
+  `(to, value, data, gas)` at the same nonce with bumped fees. Original
+  calldata recovered via `eth.getTransaction(cached_hash)`.
+- **`outcome=superseded`** in both audit log and idempotency cache when
+  the original tx mines before the cancel/replace lands (RPC returns
+  `nonce too low`). Idempotency replay now distinguishes "race lost" from
+  "broadcast succeeded" cleanly — agent retry with same `request_id`
+  gets the cached race outcome instead of a double-broadcast.
+- **Audit recovery fields**: `recovery` (`"cancel"` / `"replace"`),
+  `old_tx_hash`, `original_kind` — so forensics can tell a cancel apart
+  from a regular 0-value self-send.
+- **Swap-to-native-ETH auto-unwrap.** `wallet swap <token> ETH` now
+  encodes a `multicall([exactInputSingle(recipient=ADDRESS_THIS),
+  unwrapWETH9(amountMin, user)])` so the user receives native ETH
+  instead of WETH. Without this, an agent that follows a swap with
+  `wallet send X ETH ...` would underflow.
+- **`insufficient_funds` typed error envelope.** `finalize_tx` traps the
+  geth/erigon/reth `insufficient funds for gas * price + value` RPC
+  error and raises `InsufficientFundsError`; `wallet send` emits a clean
+  `code: insufficient_funds` JSON envelope instead of a raw web3.py
+  traceback.
+
+### Changed
+- `confirm_and_broadcast` gains `preserve_nonce` parameter (default
+  `False`) — when `True`, skips the late nonce-refresh and pins to the
+  prepared tx's nonce. Used only by `wallet tx cancel / replace`; all
+  other paths still late-bind nonce at sign-time.
+- `_CLASSIFY_TABLE` in `cli/_common.py` gains `tx_cancel` / `tx_replace`
+  rows so the audit log, JSON envelope `kind`, and preview `action` field
+  surface the recovery action instead of falling through to `unknown`.
+- `core/policy.py:_category` gains explicit `tx cancel` / `tx replace`
+  branches: cancel must be `is_self_send_for_cancel=True` + `to==from` +
+  `amount_wei==0` (otherwise blocked as forged label); replace delegates
+  to the original op's category so it faces the same allowlist / cap /
+  HF gates.
+
+### Docs
+- `docs/plan-stuck-tx-recovery.md` — design doc for the recovery layer.
+- `docs/wallet-mainnet-test-plan.md` — mainnet entry checklist.
+- `docs/wallet-sepolia-mainnet-rehearsal-report.md` — end-to-end Sepolia
+  verification of the mainnet plan (15 test points, 12 pass / 2 skipped
+  / 1 adapted).
+- `docs/TESTING.md` — new section on `aave repay --max` needing
+  `balance ≥ debt + buffer` (testnet high-APR pools accrue interest
+  faster than stablecoin precision).
 
 ---
 
