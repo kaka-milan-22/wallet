@@ -12,6 +12,7 @@ from wallet.cli import contract as contract_cli
 from wallet.cli import lp as lp_cli
 from wallet.cli import policy as policy_cli
 from wallet.cli import token as token_cli
+from wallet.cli import tx as tx_cli
 from wallet.cli import watch as watch_cli
 from wallet.cli._output import OutputMode, emit, stdout_console
 from wallet.cli.balance import balance as balance_cmd
@@ -35,6 +36,7 @@ app.add_typer(aave_cli.app, name="aave")
 app.add_typer(lp_cli.app, name="lp")
 app.add_typer(chain_cli.app, name="chain")
 app.add_typer(contract_cli.app, name="contract")
+app.add_typer(tx_cli.app, name="tx")
 app.command("balance")(balance_cmd)
 app.command("portfolio")(portfolio_cmd)
 app.command("send")(send_cmd)

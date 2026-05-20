@@ -161,13 +161,25 @@ def default_policy() -> Policy:
 
 def _category(prepared) -> str:
     """Classify the prepared tx into 'send' / 'approve' / 'swap' / 'aave_*' /
-    'lp_*' / 'contract_call' / 'unknown'."""
+    'lp_*' / 'cancel' / 'replace' / 'contract_call' / 'unknown'."""
     kind = prepared.description.get("kind", "")
     # `contract call <fn>` is the typed-policy escape hatch — match by prefix
     # since the suffix varies per function. Routed through a dedicated
     # category so we can hard-block it for agent callers below.
     if kind.startswith("contract call"):
         return "contract_call"
+    # Stuck-tx ops have their own categories; replace delegates to the
+    # original op's category so the replacement faces the same policy gates
+    # the original did (recipient_allowlist, contract_allowlist, etc.).
+    if kind == "tx cancel":
+        return "cancel"
+    if kind == "tx replace":
+        original_kind = prepared.description.get("original_kind", "")
+        if original_kind:
+            class _ShimPrepared:
+                description = {**prepared.description, "kind": original_kind}
+            return _category(_ShimPrepared())
+        return "replace"
     if kind == "swap":
         return "swap"
     if kind == "aave supply":
@@ -321,7 +333,43 @@ def evaluate(
     if target and target.lower() in {a.lower() for a in policy.sentinel_blocklist}:
         return Decision(allowed=False, reason="sentinel-blocklisted", severity="block")
 
-    # --- 1b. contract_call category: agent-block + contract_allowlist floor ---
+    # --- 1a. cancel: 0-value self-send at a specific nonce. Bypasses
+    # recipient_allowlist (recipient is the sender itself) but still must
+    # satisfy structural invariants — otherwise an attacker who can mint a
+    # "tx cancel" description label could route value to themselves under
+    # the policy bypass.
+    if category == "cancel":
+        sender = desc.get("from")
+        if not desc.get("is_self_send_for_cancel"):
+            return Decision(
+                allowed=False,
+                reason="cancel-flag-missing",
+                severity="block",
+            )
+        if not sender or not target or sender.lower() != target.lower():
+            return Decision(
+                allowed=False,
+                reason="cancel-must-be-self-send",
+                severity="block",
+            )
+        if amount_wei != 0:
+            return Decision(
+                allowed=False,
+                reason="cancel-must-be-zero-value",
+                severity="block",
+            )
+        return Decision(allowed=True, reason="cancel-allowed", severity="allow")
+
+    # --- 1b. replace with unrecoverable original kind: agent must run
+    # explicit cancel + re-prepare instead.
+    if category == "replace":
+        return Decision(
+            allowed=False,
+            reason="replace-original-kind-unknown",
+            severity="block",
+        )
+
+    # --- 1c. contract_call category: agent-block + contract_allowlist floor ---
     # This is the typed-policy escape hatch. Per-op semantic gates (HF check,
     # pool allowlist, swap router allowlist, deny_unlimited_approve, etc.) do
     # NOT exist on this path — the wallet has no semantic model of what the

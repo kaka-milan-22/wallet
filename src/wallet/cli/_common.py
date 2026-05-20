@@ -434,7 +434,15 @@ def confirm_and_broadcast(
     yes: bool,
     policy_bypass: bool = False,
     request_id: str | None = None,
+    preserve_nonce: bool = False,
 ) -> None:
+    """Drive a PreparedTx through preview / policy / idempotency / sign / broadcast.
+
+    `preserve_nonce=True` skips the sign-time nonce refresh. Used by stuck-tx
+    recovery (cancel / replace) where the PreparedTx is pinned to a specific
+    pre-existing mempool nonce — refreshing would defeat the EIP-1559
+    replacement semantics.
+    """
     from wallet.cli._caller import caller_kind
     from wallet.core import policy as policy_mod
     from wallet.core.policy import Decision
@@ -578,19 +586,30 @@ def confirm_and_broadcast(
     # which would make a baked-in nonce stale. Reading from "pending" includes
     # already-submitted-but-unmined txs in our own mempool slot, so successive
     # broadcasts in the same script work too.
-    try:
-        prepared.tx["nonce"] = w3.eth.get_transaction_count(
-            Web3.to_checksum_address(prepared.tx["from"]), "pending"
-        )
-    except Exception as e:
-        _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
-        emit_error(
-            "rpc_error",
-            command=cmd, chain=chain.name,
-            reason=f"failed to refresh nonce: {type(e).__name__}: {e}",
-        )
-        raise typer.Exit(code=1) from None
-    explain(f"nonce refreshed at sign-time → {prepared.tx['nonce']}")
+    if preserve_nonce:
+        if "nonce" not in prepared.tx:
+            _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+            emit_error(
+                "validation_error",
+                command=cmd, chain=chain.name,
+                reason="preserve_nonce=True but PreparedTx has no nonce field",
+            )
+            raise typer.Exit(code=1)
+        explain(f"nonce preserved (stuck-tx recovery) = {prepared.tx['nonce']}")
+    else:
+        try:
+            prepared.tx["nonce"] = w3.eth.get_transaction_count(
+                Web3.to_checksum_address(prepared.tx["from"]), "pending"
+            )
+        except Exception as e:
+            _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
+            emit_error(
+                "rpc_error",
+                command=cmd, chain=chain.name,
+                reason=f"failed to refresh nonce: {type(e).__name__}: {e}",
+            )
+            raise typer.Exit(code=1) from None
+        explain(f"nonce refreshed at sign-time → {prepared.tx['nonce']}")
 
     try:
         raw = sign_transaction(sender_account, prepared.tx)
@@ -613,6 +632,8 @@ def confirm_and_broadcast(
                 tx_hash=tx_hash,
                 nonce=prepared.tx.get("nonce"),
                 outcome="broadcast",
+                from_address=prepared.description.get("from") or prepared.tx.get("from"),
+                description=dict(prepared.description),
             )
         except Exception:
             pass

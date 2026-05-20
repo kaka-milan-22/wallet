@@ -46,6 +46,12 @@ class CachedResult(BaseModel):
     detail: str = ""
     created_at: str
     expires_at: str
+    # `from_address` + `description` are populated for broadcast outcomes only.
+    # They let `wallet tx pending / cancel / replace` rebuild the original op
+    # without round-tripping to the chain. Optional with defaults so older
+    # entries written before these fields existed still load.
+    from_address: str | None = None
+    description: dict | None = None
 
 
 def store_path() -> Path:
@@ -198,6 +204,8 @@ def record(
     nonce: int | None,
     outcome: str,
     detail: str = "",
+    from_address: str | None = None,
+    description: dict | None = None,
     ttl_hours: int = DEFAULT_TTL_HOURS,
 ) -> None:
     now = _now_utc()
@@ -211,6 +219,8 @@ def record(
         nonce=nonce,
         outcome=outcome,
         detail=detail,
+        from_address=(from_address.lower() if isinstance(from_address, str) else None),
+        description=description,
         created_at=now.isoformat(),
         expires_at=expires.isoformat(),
     ).model_dump()

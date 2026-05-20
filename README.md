@@ -299,6 +299,16 @@ uv run wallet book add alice 0xabc...
 uv run wallet watch add 0xdef... --label vitalik
 uv run wallet token add 0x779877A7B0D9E8603169DdbD7836e478b4624789  # adds LINK
 
+# Stuck-tx recovery (when base-fee spikes and a broadcast is jammed in mempool)
+uv run wallet tx pending                                          # list broadcasts with no receipt yet
+uv run wallet tx cancel 42 --broadcast --request-id cxl-42-$(date +%s)
+                                                                  # 0-value self-send at nonce 42, frees the slot
+uv run wallet tx replace 42 --broadcast --request-id rpl-42-$(date +%s)
+                                                                  # re-broadcasts original calldata at +25% gas
+# Both default to dry-run; --speedup-pct overrides the 25% bump on top of the
+# 110% EIP-1559 mempool replacement floor. `pending` reads idempotency.json
+# locally — only txs originally broadcast through this wallet are recoverable.
+
 # Chain inspection + multi-chain
 uv run wallet chain list                    # builtin (sepolia) + user-added chains, ★ marks default
 uv run wallet chain show ethereum           # full ChainConfig dump including protocol addresses
