@@ -1,51 +1,143 @@
 # wallet
 
-An **AI-agent-native EVM wallet** — Python CLI, JSON I/O, policy-gated writes,
-append-only audit. MetaMask is for humans clicking buttons in browsers; this
-is for LLM agents, scripts, and cron jobs calling `wallet send / swap / aave
-borrow` from a terminal with safety rails an autonomous caller can't bypass.
+> An **AI-agent-native EVM wallet**. A Python CLI built for LLM agents,
+> scripts, and cron jobs to call — with safety rails an autonomous caller
+> can't bypass.
 
-What you get today (Sepolia tested end-to-end):
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Testnet: Sepolia](https://img.shields.io/badge/testnet-Sepolia-green.svg)](https://sepolia.etherscan.io/)
+[![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)](ROADMAP.md)
 
-- **Accounts** — BIP-39 HD wallet; mnemonic encrypted in `agent-vault`,
-  retrieved into the signing process via Unix FIFO (kernel pipe, never on disk).
-- **Transfers** — ETH + ERC-20 send, ERC-20 approve / allowance / revoke.
-- **Swap** — `wallet swap` via 0x aggregator (spender + `transaction.to` pinned
-  to the chain-known AllowanceHolder, defending against quote-tampering attacks)
-  with automatic fallback to direct Uniswap V3.
-- **Lending** — `wallet aave supply / withdraw / borrow / repay` against Aave V3,
-  with a configurable `min_health_factor` policy gate that blocks risky ops
-  *before* Aave's chain-level HF >= 1 revert.
-- **Liquidity** — `wallet lp mint / increase / remove / collect / positions` for
-  Uniswap V3 LP NFTs, gated by an `lp_pool_allowlist` policy that names which
-  `(token0, token1, fee)` pools the agent may touch. Rebalance is a
+---
+
+## Why this exists
+
+In 2026, an LLM agent can already read your portfolio, decide to rebalance,
+and broadcast the transaction. The wallets you trust today — MetaMask,
+Frame, Rabby — were built for **humans clicking buttons in a browser**.
+The moment you hand the keyboard to an agent, three failure modes show up
+that no browser wallet was designed to handle:
+
+| Failure mode | What happens |
+|---|---|
+| **Key leakage** | Mnemonic / private key flows through any process the agent can see — including LLM provider servers when the agent's tool output is fed back as context |
+| **Unbounded action** | A prompt injection or off-by-one → "`send 1000 USDC to 0x...`" with no spending cap, no recipient check, no allowlist gate |
+| **Retry double-spend** | Agent retries on RPC timeout → two on-chain transactions, one user intent |
+
+`wallet` is built agent-first. The agent gets a CLI it can call with `--json`
+output. Every signing path goes through a **four-layer safety stack** that
+catches a different class of failure. The private key never crosses the
+agent's process boundary.
+
+## How it works
+
+```
+                 ┌─────────────────────────────────────────────────────────┐
+                 │  LLM agent (Claude Code / Cursor / cron / arbitrary)    │
+                 │      ↓  shell call: wallet send @alice 10 --json ...    │
+                 └─────────────────────────────────────────────────────────┘
+                                          │
+   ┌──────────────────────────────────────┼──────────────────────────────────────┐
+   │                       wallet CLI — 4-layer safety stack                     │
+   │                                                                             │
+   │   1. skill        agent-facing guidance: dry-run first, fresh --request-id  │
+   │   2. policy       hard pre-broadcast block: caps, allowlists, HF gate       │
+   │   3. idempotency  same --request-id → cached tx_hash, no double-spend       │
+   │   4. audit        append-only JSON-lines record of every attempt            │
+   └─────────────────────────────────────────────────────────────────────────────┘
+                                          │
+                  signer process (FIFO-piped mnemonic, never on disk)
+                                          │
+                                          ▼
+                          ┌──────────────────────────────┐
+                          │  EVM chain (Sepolia / L1 / L2) │
+                          └──────────────────────────────┘
+```
+
+The mnemonic lives encrypted in [`agent-vault`](https://github.com/kaka-milan-22/agent-vault),
+retrieved into the signing process via a Unix FIFO — kernel pipe, never written
+to `/tmp` or any file the agent can read.
+
+## How it compares
+
+|                              | MetaMask + browser agent | `ethers.js` + raw key | **`wallet`** |
+|------------------------------|:---:|:---:|:---:|
+| Callable from terminal       | ✗ | ✓ | ✓ |
+| JSON output for agent parsing| ✗ | partial | ✓ |
+| Key never seen by agent      | partial | ✗ | ✓ |
+| Pre-broadcast policy gate    | ✗ | ✗ | ✓ |
+| Retry-safe (idempotency)     | ✗ | DIY | ✓ |
+| Append-only audit log        | ✗ | DIY | ✓ |
+| Health-factor gate (Aave)    | ✗ | ✗ | ✓ |
+| LP pool allowlist            | n/a | ✗ | ✓ |
+| Browser dApp interaction     | ✓ | ✗ | ✗ |
+
+`wallet` is **not** a MetaMask replacement. It doesn't speak WalletConnect,
+doesn't inject `window.ethereum`, doesn't render dApp UIs. Keep MetaMask
+alongside for browser dApp interaction; they cover different use cases
+(human-in-front-of-UI vs. agent-in-front-of-terminal).
+
+## Who this is for
+
+- ✓ Builders running LLM agents that touch DeFi — trading bots, treasury
+  rebalancers, automated payments, on-chain cron jobs
+- ✓ Anyone uneasy about giving a browser-based agent unrestricted access to a
+  MetaMask popup
+- ✓ Teams that need an audit trail of every signing attempt, not just
+  successful broadcasts
+- ✗ Not a MetaMask replacement
+- ✗ Not yet mainnet-recommended for non-trivial value — see [`ROADMAP.md`](ROADMAP.md);
+  the single remaining blocker is Ledger integration ([rationale](docs/why_hard_wallet.md))
+
+## Quick demo (Sepolia, ~5 minutes)
+
+```sh
+# 1. Install
+uv sync
+
+# 2. Set RPC + Etherscan
+export WALLET_SEPOLIA_RPC=https://ethereum-sepolia.publicnode.com
+export ETHERSCAN_API_KEY=...
+
+# 3. Generate an HD wallet (mnemonic shown once; you store it in agent-vault)
+uv run wallet account create main
+agent-vault set wallet/main/mnemonic        # paste mnemonic; agent will never see it again
+
+# 4. Fund the address from a Sepolia faucet, then:
+uv run wallet balance
+uv run wallet portfolio                     # all tokens at once
+uv run wallet send 0x... 0.001 --broadcast  # asks y/N; --yes to skip
+
+# 5. Try a swap and a lend, agent-style (--json output for parsing)
+uv run wallet --json swap ETH USDC 0.001 --broadcast --yes
+uv run wallet --json aave supply USDC 10 --broadcast --yes
+```
+
+For the full command tree see [Daily commands](#daily-commands) below.
+
+## What you get today (Sepolia tested end-to-end)
+
+- **Accounts** — BIP-39 HD wallet; mnemonic encrypted in
+  [`agent-vault`](https://github.com/kaka-milan-22/agent-vault), retrieved
+  into the signing process via Unix FIFO (kernel pipe, never on disk)
+- **Transfers** — ETH + ERC-20 send, ERC-20 approve / allowance / revoke
+- **Swap** — `wallet swap` via 0x aggregator (spender + `transaction.to`
+  pinned to the chain-known AllowanceHolder, defending against
+  quote-tampering attacks) with automatic fallback to direct Uniswap V3
+- **Lending** — `wallet aave supply / withdraw / borrow / repay` against
+  Aave V3, with a configurable `min_health_factor` policy gate that blocks
+  risky ops *before* Aave's chain-level HF >= 1 revert
+- **Liquidity** — `wallet lp mint / increase / remove / collect / positions`
+  for Uniswap V3 LP NFTs, gated by an `lp_pool_allowlist` policy that names
+  which `(token0, token1, fee)` pools the agent may touch. Rebalance is a
   compose-of-primitives, not a built-in strategy (see
-  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
-- **On-chain faucet** — `wallet aave faucet` mints testnet mock tokens without
-  needing a browser wallet.
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md))
+- **On-chain faucet** — `wallet aave faucet` mints testnet mock tokens
+  without needing a browser wallet
 - **Sepolia operational notes** — testnet footguns (two USDC reserves, Aave
   supply caps, LP mint ratio math, NFPM/pool allowlist schema) collected in
-  [`docs/TESTING.md`](docs/TESTING.md).
-
-Designed around four safety layers, each catches a different failure mode:
-
-| Layer | Catches |
-|---|---|
-| **skill** (`docs/skills/wallet-agent.skill.md`) | Agent guidance: how to call, what to never do |
-| **policy** (`~/.wallet/policy.json`) | Hard pre-broadcast block: spending caps, recipient / contract / LP-pool allowlists, unlimited-approve deny, `min_health_factor`, sentinel blocklist |
-| **idempotency** (`~/.wallet/idempotency.json`) | Retry safety: same `--request-id` returns the cached `tx_hash` instead of double-spending |
-| **audit** (`~/.wallet/audit.log`) | Append-only JSON-lines record of every signing attempt (broadcast, rejected, replayed); not exposed via any CLI read |
-
-**Not** a MetaMask replacement: this wallet doesn't speak WalletConnect, doesn't
-inject `window.ethereum`, doesn't render dApp UIs. It talks to contracts
-directly — DEX aggregator quotes via API, Aave Pool / Uniswap router via ABI.
-For browser-based dApp interaction keep MetaMask alongside; they cover different
-use cases (human in front of UI vs. agent in front of terminal).
-
-**Not** mainnet-recommended yet for non-trivial value: see
-[`ROADMAP.md`](ROADMAP.md) — the single remaining code blocker is hardware
-wallet (Ledger) integration. See [`docs/why_hard_wallet.md`](docs/why_hard_wallet.md)
-for the full rationale.
+  [`docs/TESTING.md`](docs/TESTING.md)
 
 ## Install
 
