@@ -69,7 +69,39 @@ SWAP_ROUTER_V2_ABI = [
         ],
         "outputs": [{"name": "amountOut", "type": "uint256"}],
     },
+    # `multicall(bytes[])` chains exactInputSingle + unwrapWETH9 in a single
+    # tx so a user who asked for native ETH out actually receives ETH (not
+    # WETH). Without this the router leaves a WETH balance in the user's
+    # account and they need a separate unwrap step — surprising semantics.
+    {
+        "name": "multicall",
+        "type": "function",
+        "stateMutability": "payable",
+        "inputs": [{"name": "data", "type": "bytes[]"}],
+        "outputs": [{"name": "results", "type": "bytes[]"}],
+    },
+    # `unwrapWETH9(amountMinimum, recipient)` withdraws all WETH held by the
+    # router and forwards it as native ETH to `recipient`. Used as the
+    # second call of the multicall when token_out is native.
+    {
+        "name": "unwrapWETH9",
+        "type": "function",
+        "stateMutability": "payable",
+        "inputs": [
+            {"name": "amountMinimum", "type": "uint256"},
+            {"name": "recipient", "type": "address"},
+        ],
+        "outputs": [],
+    },
 ]
+
+
+# SwapRouter02 treats this sentinel as "recipient is the router itself" so
+# the swap output stays inside the router; the next call in the multicall
+# (unwrapWETH9) then forwards it to the real user. Constant defined in
+# Periphery contracts as MSG_SENDER (1) / ADDRESS_THIS (2). We use
+# ADDRESS_THIS = 2 because msg.sender is the user's EOA (no help).
+_ROUTER_AS_RECIPIENT = "0x0000000000000000000000000000000000000002"
 
 
 class UniswapV3DirectRoute(RouteProvider):
@@ -93,15 +125,23 @@ class UniswapV3DirectRoute(RouteProvider):
         )
 
         # Native ETH input: calldata uses WETH address (router wraps via msg.value).
-        # Route on token_in.is_native (set only by the CLI's native-symbol branch);
+        # Native ETH output: calldata still references WETH; the router writes WETH
+        # into itself (recipient = ADDRESS_THIS sentinel), and a second multicall
+        # leg `unwrapWETH9` converts to native ETH and forwards to the user.
+        # Route on token_*.is_native (set only by the CLI's native-symbol branch);
         # symbol() is attacker-controlled for 0x… tokens. See security_review.md Vuln 1.
         is_native_in = token_in.is_native
+        is_native_out = token_out.is_native
         effective_in_address = (
             Web3.to_checksum_address(chain.builtin_tokens["WETH"])
             if is_native_in
             else Web3.to_checksum_address(token_in.address)
         )
-        effective_out_address = Web3.to_checksum_address(token_out.address)
+        effective_out_address = (
+            Web3.to_checksum_address(chain.builtin_tokens["WETH"])
+            if is_native_out
+            else Web3.to_checksum_address(token_out.address)
+        )
 
         quoter = w3.eth.contract(address=quoter_addr, abi=QUOTER_V2_ABI)
 
@@ -130,18 +170,36 @@ class UniswapV3DirectRoute(RouteProvider):
         amount_out_min = apply_slippage_floor(best_out, slippage_bps)
 
         router = w3.eth.contract(address=router_addr, abi=SWAP_ROUTER_V2_ABI)
-        data = router.encode_abi(
+        # When output is native ETH, the swap recipient must be the router
+        # itself (ADDRESS_THIS sentinel) so the WETH stays in the router for
+        # the unwrap leg; the unwrap then forwards real ETH to the user.
+        swap_recipient = (
+            _ROUTER_AS_RECIPIENT if is_native_out
+            else Web3.to_checksum_address(sender)
+        )
+        swap_calldata = router.encode_abi(
             "exactInputSingle",
             args=[(
                 effective_in_address,
                 effective_out_address,
                 best_fee,
-                Web3.to_checksum_address(sender),
+                swap_recipient,
                 amount_in_wei,
                 amount_out_min,
                 0,  # sqrtPriceLimitX96 — no price limit
             )],
         )
+        if is_native_out:
+            unwrap_calldata = router.encode_abi(
+                "unwrapWETH9",
+                args=[amount_out_min, Web3.to_checksum_address(sender)],
+            )
+            data = router.encode_abi(
+                "multicall",
+                args=[[bytes.fromhex(swap_calldata[2:]), bytes.fromhex(unwrap_calldata[2:])]],
+            )
+        else:
+            data = swap_calldata
 
         return Quote(
             route_provider=self.name,

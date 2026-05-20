@@ -100,3 +100,30 @@ approval, which `deny_unlimited_approve: true` blocks by design.
 
 Sepolia ~12s. After `--broadcast`, sleep ~15–18s before querying state for
 confirmation. Public RPCs sometimes lag an extra block.
+
+## Aave `repay --max` needs balance ≥ debt + buffer
+
+`wallet aave repay <token> --max` passes `type(uint256).max` to Aave, which
+then transfers `min(debt, allowance)` from the user. **But the user's token
+balance must cover the actual debt** — the underlying `transferFrom` reverts
+with `ERC20: transfer amount exceeds balance` if the account holds exactly the
+borrowed amount and debt has accrued any interest since the borrow (even a
+few seconds → micro-units on stablecoins, more on high-APR testnet pools).
+
+Concrete failure observed on Sepolia (USDT pool, 64% borrow APR):
+
+```
+borrow 5 USDT → balance = 5.000000 USDT, debt = 5.000005 USDT after 30s
+repay --max → simulation_reverted: ERC20: transfer amount exceeds balance
+```
+
+Mainnet stablecoin pools have ~3-10% borrow APR so this rarely bites with a
+quick repay, but the failure mode exists. Mitigations (in order of preference):
+
+1. **Hold a small buffer** of the borrowed token before calling `repay --max`.
+   For Aave testnet faucet flows: `wallet aave faucet <token> 1` then retry.
+2. **Repay an explicit amount** slightly below your balance, leaving the dust
+   debt to be paid on the next cycle: `wallet aave repay USDT 4.99` instead of
+   `--max`. Trades exact-zero closure for guaranteed success.
+3. **Borrow → repay tighter**: don't sit on a debt position long enough for
+   interest to outpace your balance precision.

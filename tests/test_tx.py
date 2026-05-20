@@ -9,6 +9,7 @@ from web3.exceptions import ContractLogicError
 from wallet.core.config import ChainConfig
 from wallet.core.tx import (
     MIN_PRIORITY_GWEI,
+    InsufficientFundsError,
     prepare_erc20_approve,
     prepare_native_transfer,
 )
@@ -104,6 +105,34 @@ def test_simulation_revert_surfaces_clearly():
     w3 = _w3_mock()
     w3.eth.call.side_effect = ContractLogicError("execution reverted: ERC20: insufficient balance")
     with pytest.raises(RuntimeError, match="simulation reverted"):
+        prepare_native_transfer(w3, SEPOLIA, FROM, TO, Web3.to_wei(1, "ether"))
+
+
+def test_finalize_tx_maps_insufficient_funds_to_typed_error():
+    """When estimate_gas fails because the sender's balance can't cover
+    value + gas, finalize_tx must raise InsufficientFundsError so the CLI
+    can emit a clean envelope. Bare RPC tracebacks are non-actionable for
+    JSON callers and noisy for humans."""
+    w3 = _w3_mock()
+    # Simulate geth's exact error message for insufficient funds.
+    w3.eth.estimate_gas.side_effect = ValueError({
+        "code": -32000,
+        "message": "insufficient funds for gas * price + value: "
+                   "balance 3310, want 100000000000000000000",
+    })
+
+    with pytest.raises(InsufficientFundsError, match="insufficient funds"):
+        prepare_native_transfer(w3, SEPOLIA, FROM, TO, Web3.to_wei(100, "ether"))
+
+
+def test_finalize_tx_does_not_swallow_unrelated_estimate_gas_errors():
+    """Only the insufficient-funds class becomes InsufficientFundsError. A
+    contract revert during estimate_gas (e.g. require() failure) must keep
+    its original type so simulation-revert tests downstream still pass."""
+    w3 = _w3_mock()
+    w3.eth.estimate_gas.side_effect = ValueError({"code": -32000, "message": "execution reverted: BAD"})
+
+    with pytest.raises(ValueError):
         prepare_native_transfer(w3, SEPOLIA, FROM, TO, Web3.to_wei(1, "ether"))
 
 

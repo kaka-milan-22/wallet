@@ -88,6 +88,17 @@ def _strip_nonce(tx: dict[str, Any]) -> dict[str, Any]:
     return tx
 
 
+class InsufficientFundsError(RuntimeError):
+    """Raised when estimate_gas / simulation fails because the sender's
+    balance can't cover `value + gas * maxFeePerGas`.
+
+    Distinct from a contract revert — surface this with a dedicated error
+    code so callers (and policy probes) don't get a raw RPC traceback.
+    Catching this in CLI yields `error: insufficient_funds` with a
+    well-formatted reason instead of a 30-line traceback through web3.py.
+    """
+
+
 def finalize_tx(w3: Web3, tx: dict[str, Any]) -> int:
     """Finish a half-built tx and return the estimated fee in wei.
 
@@ -103,10 +114,33 @@ def finalize_tx(w3: Web3, tx: dict[str, Any]) -> int:
     want pre-simulation (none today).
     """
     if "gas" not in tx:
-        tx["gas"] = w3.eth.estimate_gas(tx)
+        try:
+            tx["gas"] = w3.eth.estimate_gas(tx)
+        except Exception as e:
+            # `insufficient funds for gas * price + value` (geth / erigon /
+            # reth) and variants on other clients all mean the same thing:
+            # `eth_estimateGas` ran the EVM with the caller's actual balance
+            # state and the call failed because of that balance, not because
+            # the contract reverted. Surface this as a typed error so the CLI
+            # emits a clean `insufficient_funds` envelope instead of a raw
+            # traceback. Reasoning over message text is fragile but the
+            # standard JSON-RPC error code is generic (-32000), so the text
+            # is the only thing carrying intent.
+            if _is_insufficient_funds(e):
+                raise InsufficientFundsError(str(e)) from e
+            raise
     _simulate(w3, tx)
     _strip_nonce(tx)
     return int(tx["maxFeePerGas"]) * int(tx["gas"])
+
+
+def _is_insufficient_funds(e: Exception) -> bool:
+    msg = str(e).lower()
+    return (
+        "insufficient funds" in msg
+        or "insufficient balance" in msg
+        or "gas required exceeds allowance" in msg and "balance" in msg
+    )
 
 
 def prepare_native_transfer(

@@ -86,8 +86,13 @@ def _make_w3_mock(per_fee_outputs: dict[int, int | None]):
             inner.call = lambda: call_handler(params)
             return inner
         c.functions.quoteExactInputSingle = quote_fn
-        # Router side: encode_abi returns deterministic stub
-        c.encode_abi = lambda name, args: "0x" + name.encode().hex() + "00" * 32
+        # Router side: encode_abi returns deterministic stub. MagicMock
+        # records every call so tests can inspect args (used by the
+        # native-out unwrap test to verify exactInputSingle recipient and
+        # the multicall composition).
+        c.encode_abi = MagicMock(
+            side_effect=lambda name, args: "0x" + name.encode().hex() + "00" * 32
+        )
         return c
 
     w3.eth.contract = contract_factory
@@ -157,6 +162,95 @@ def test_quote_native_eth_in_sets_value_and_uses_weth():
     assert q.token_in_address == Web3.to_checksum_address(SEPOLIA.builtin_tokens["WETH"])
     # symbol preserved on outside
     assert q.token_in_symbol == "ETH"
+
+
+def test_quote_native_eth_out_wraps_swap_in_multicall_with_unwrap():
+    """When token_out is native ETH the route must emit a multicall:
+       1. exactInputSingle(recipient = ADDRESS_THIS sentinel 0x...0002)
+       2. unwrapWETH9(amountMin, user)
+    so the user receives real ETH instead of WETH.
+
+    The test inspects encode_abi call args directly (rather than parsing
+    the stubbed calldata bytes) so it verifies the composition without
+    needing a real ABI encoder.
+    """
+    eth_out = TokenInfo(
+        symbol="ETH", address=SEPOLIA.builtin_tokens["WETH"], decimals=18,
+        is_native=True,
+    )
+
+    # Use a spy mock that records every encode_abi call so the test can
+    # verify the multicall composition (which fn names were encoded and
+    # with what args).
+    seen_encode: list[tuple[str, list]] = []
+
+    def spy_factory(address, abi):
+        c = MagicMock()
+        c.functions.quoteExactInputSingle = lambda params: MagicMock(
+            call=lambda: [10**16, 0, 0, 100_000]
+        )
+
+        def encode(name, args):
+            seen_encode.append((name, args))
+            return "0x" + name.encode().hex() + "00" * 32
+
+        c.encode_abi = encode
+        return c
+
+    spy_w3 = MagicMock()
+    spy_w3.eth.contract = spy_factory
+    route = UniswapV3DirectRoute()
+    q = route.quote(
+        w3=spy_w3, chain=SEPOLIA, sender=SENDER,
+        token_in=USDC, token_out=eth_out,
+        amount_in_wei=37_000_000, slippage_bps=100,
+    )
+
+    fn_names = [n for n, _ in seen_encode]
+    assert "exactInputSingle" in fn_names, fn_names
+    assert "unwrapWETH9" in fn_names, fn_names
+    assert "multicall" in fn_names, fn_names
+
+    # exactInputSingle.recipient must be ADDRESS_THIS sentinel (0x…0002),
+    # not the user's EOA — that's what keeps WETH in the router for unwrap.
+    swap_args = next(a for n, a in seen_encode if n == "exactInputSingle")[0]
+    # swap_args is the tuple: (tokenIn, tokenOut, fee, recipient, amountIn, ...)
+    recipient = swap_args[3]
+    assert recipient.lower() == "0x0000000000000000000000000000000000000002", (
+        f"swap recipient must be ADDRESS_THIS for unwrap to work, got {recipient}"
+    )
+
+    # unwrapWETH9.recipient must be the real user (so they actually get ETH).
+    unwrap_args = next(a for n, a in seen_encode if n == "unwrapWETH9")
+    assert unwrap_args[1].lower() == SENDER.lower(), (
+        f"unwrap must send to user, got {unwrap_args[1]}"
+    )
+
+    # value=0 (ERC-20 input); token_out symbol preserved.
+    assert q.value == 0
+    assert q.token_out_symbol == "ETH"
+    assert q.token_out_address == Web3.to_checksum_address(SEPOLIA.builtin_tokens["WETH"])
+
+
+def test_quote_erc20_to_erc20_does_not_use_multicall():
+    """When neither token is native, the calldata is a plain exactInputSingle —
+    no multicall wrapper. Guards against regressing the unwrap path."""
+    outputs = {500: 10**18}
+    w3 = _make_w3_mock(outputs)
+
+    route = UniswapV3DirectRoute()
+    q = route.quote(
+        w3=w3, chain=SEPOLIA, sender=SENDER,
+        token_in=USDC, token_out=WETH,  # WETH as ERC-20, not is_native
+        amount_in_wei=10**6,
+        slippage_bps=100,
+    )
+
+    # Top-level call is exactInputSingle (not wrapped in multicall).
+    assert "exactInputSingle".encode().hex() in q.data.lower()
+    assert "multicall".encode().hex() not in q.data.lower(), (
+        "ERC-20 → ERC-20 must not wrap in multicall"
+    )
 
 
 def test_quote_fake_native_symbol_does_not_set_value():

@@ -9,10 +9,15 @@ from wallet.cli._common import (
     resolve_account,
     resolve_address,
 )
+from wallet.cli._output import emit_error
 from wallet.core.config import get_chain
 from wallet.core.rpc import parse_units
 from wallet.core.tokens import resolve_token
-from wallet.core.tx import prepare_erc20_transfer, prepare_native_transfer
+from wallet.core.tx import (
+    InsufficientFundsError,
+    prepare_erc20_transfer,
+    prepare_native_transfer,
+)
 from wallet.storage.state import load_state
 
 console = Console()
@@ -42,16 +47,28 @@ def send(
 
     to_addr = resolve_address(state, to)
 
-    if token is None:
-        amount_wei = parse_units(amount, 18)
-        prepared = prepare_native_transfer(w3, cfg, sender.address, to_addr, amount_wei)
-    else:
-        info = resolve_token(w3, cfg, state, token)
-        amount_raw = parse_units(amount, info.decimals)
-        prepared = prepare_erc20_transfer(
-            w3, cfg, sender.address, info.address, to_addr, amount_raw,
-            info.symbol, info.decimals,
+    try:
+        if token is None:
+            amount_wei = parse_units(amount, 18)
+            prepared = prepare_native_transfer(w3, cfg, sender.address, to_addr, amount_wei)
+        else:
+            info = resolve_token(w3, cfg, state, token)
+            amount_raw = parse_units(amount, info.decimals)
+            prepared = prepare_erc20_transfer(
+                w3, cfg, sender.address, info.address, to_addr, amount_raw,
+                info.symbol, info.decimals,
+            )
+    except InsufficientFundsError as e:
+        # Estimate_gas / simulate failed because the sender's balance can't
+        # cover value + gas. Surface as a typed envelope so JSON callers get a
+        # parseable response instead of a raw web3.py traceback.
+        emit_error(
+            "insufficient_funds",
+            command="send",
+            chain=cfg.name,
+            reason=str(e),
         )
+        raise typer.Exit(code=1) from None
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
