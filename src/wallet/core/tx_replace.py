@@ -64,11 +64,29 @@ def list_pending(w3: Web3, account_address: str) -> list[PendingTx]:
     no receipt on chain yet (still in mempool or never propagated).
 
     Filters out: receipts present + blockNumber set (mined), non-broadcast
-    outcomes (rejected / replayed_idempotent), other accounts.
+    outcomes (rejected / replayed_idempotent / superseded), other accounts,
+    and entries whose nonce has been consumed on chain by a different tx (a
+    successful cancel/replace pushes the account nonce past the cached one,
+    leaving the displaced original with no receipt and no chance of mining).
     """
     addr = account_address.lower()
     out: list[PendingTx] = []
     data = idempotency.sweep_expired()
+
+    # One `eth_getTransactionCount` for `latest` is cheap and lets us filter
+    # superseded entries (cached nonce < on-chain nonce ⇒ that slot has been
+    # consumed — either by this tx mining or by a replacement). Without it,
+    # the displaced original sits in the cache forever showing as "pending".
+    chain_nonce: int | None = None
+    try:
+        chain_nonce = int(w3.eth.get_transaction_count(
+            Web3.to_checksum_address(account_address), "latest"
+        ))
+    except Exception:
+        # If RPC fails we fall back to the receipt-only filter — pending
+        # may include stale entries but we don't drop real ones.
+        chain_nonce = None
+
     for req_id, raw in data.items():
         cached = idempotency.CachedResult(**raw)
         if cached.outcome != "broadcast":
@@ -77,6 +95,18 @@ def list_pending(w3: Web3, account_address: str) -> list[PendingTx]:
             continue
         if cached.from_address is None or cached.from_address.lower() != addr:
             continue
+        if chain_nonce is not None and int(cached.nonce) < chain_nonce:
+            # Nonce slot already consumed on chain by some tx — either this
+            # one (handled by the receipt check below) or a replacement.
+            # In either case it's not pending.
+            try:
+                receipt = w3.eth.get_transaction_receipt(cached.tx_hash)
+                if receipt is not None and getattr(receipt, "blockNumber", None) is not None:
+                    continue  # cached tx itself mined
+            except TransactionNotFound:
+                continue  # cached tx was displaced by a replacement
+            except Exception:
+                continue  # don't surface a "pending" we know is dead
         try:
             receipt = w3.eth.get_transaction_receipt(cached.tx_hash)
             if receipt is not None and getattr(receipt, "blockNumber", None) is not None:

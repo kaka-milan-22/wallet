@@ -113,6 +113,13 @@ _CLASSIFY_TABLE: tuple[tuple[str, str, str, str], ...] = (
     ("exact", "uniswap_v3 lp_increase", "lp_increase", "lp_increase"),
     ("exact", "uniswap_v3 lp_decrease", "lp_decrease", "lp_decrease"),
     ("exact", "uniswap_v3 lp_collect",  "lp_collect",  "lp_collect"),
+    # Stuck-tx recovery ops (`wallet tx cancel / replace`). Categories are
+    # `tx_cancel` / `tx_replace` so audit log and JSON envelope clearly
+    # distinguish a recovery action from the underlying op. Policy has its
+    # own router in core/policy.py:_category that maps these to `cancel` /
+    # `replace` (or delegates replace to the original op's category).
+    ("exact", "tx cancel",           "tx_cancel",     "tx_cancel"),
+    ("exact", "tx replace",          "tx_replace",    "tx_replace"),
     ("exact", "native transfer",     "send",          "native_transfer"),
     ("contains", "approve",          "approve",       "erc20_approve"),
     ("contains", "transfer",         "send",          "erc20_transfer"),
@@ -244,6 +251,17 @@ def _build_data(
     ):
         if key in desc:
             payload[key] = str(desc[key])
+    # Stuck-tx recovery fields (only present for `tx cancel` / `tx replace`).
+    # Surfacing these keeps the recovery action distinguishable in audit and
+    # JSON output — without them a cancel looks like a 0-value self-send and
+    # a replace looks like a regular send.
+    for key in (
+        "cancel_nonce", "replace_nonce",
+        "old_tx_hash", "original_tx_hash", "original_kind",
+        "is_self_send_for_cancel", "is_replacement",
+    ):
+        if key in desc:
+            payload[key] = desc[key]
     if "swap_amount_out_expected_wei" in desc:
         out_dec = int(desc.get("swap_token_out_decimals", 18))
         payload["swap_amount_out_expected_wei"] = str(desc["swap_amount_out_expected_wei"])
@@ -358,6 +376,23 @@ def _render_preview(state: WalletState, chain: ChainConfig):
             if d.get("aave_repay_max"):
                 table.add_row("repay mode", "[bold]max (full variable debt)[/bold]")
 
+        # Stuck-tx recovery preview rows — make it obvious this isn't a
+        # fresh send. The cancel/replace row points at the original tx hash
+        # so the human signer can cross-check on Etherscan before approving.
+        if d.get("kind") == "tx_cancel":
+            old_hash = d.get("old_tx_hash")
+            if old_hash:
+                table.add_row("replacing", f"[dim]{old_hash}[/dim] (cancel)")
+            else:
+                table.add_row("recovery", "[bold]cancel — 0-value self-send at locked nonce[/bold]")
+        elif d.get("kind") == "tx_replace":
+            old_hash = d.get("original_tx_hash")
+            orig_kind = d.get("original_kind", "?")
+            if old_hash:
+                table.add_row("replacing", f"[dim]{old_hash}[/dim] (speedup of {orig_kind})")
+            else:
+                table.add_row("recovery", f"[bold]replace — re-broadcast original {orig_kind} with bumped gas[/bold]")
+
         nonce_disp = d.get("nonce")
         table.add_row(
             "nonce",
@@ -401,24 +436,40 @@ def _audit_event(
         if decision.severity != "allow"
         else "allow"
     )
+    entry: dict = {
+        "chain": chain.name,
+        "from": desc.get("from"),
+        "to": desc.get("to"),
+        "spender": desc.get("spender"),
+        "kind": _category(prepared),
+        "amount_wei": str(desc.get("amount_wei", 0)),
+        "unit": desc.get("amount_unit"),
+        "token_address": desc.get("token_address"),
+        "nonce": prepared.tx.get("nonce"),
+        "gas": prepared.tx.get("gas"),
+        "hash": tx_hash,
+        "caller": caller,
+        "request_id": request_id,
+        "policy_decision": pd,
+        "outcome": outcome,
+    }
+    # Stuck-tx recovery audit enrichment. Without these fields a cancel
+    # entry is indistinguishable from a regular 0-value self-send in the
+    # log; a replace looks identical to a fresh send. Forensics needs the
+    # original tx_hash and the original op kind.
+    kind = desc.get("kind", "")
+    if kind == "tx cancel":
+        entry["recovery"] = "cancel"
+        if "old_tx_hash" in desc:
+            entry["old_tx_hash"] = desc["old_tx_hash"]
+    elif kind == "tx replace":
+        entry["recovery"] = "replace"
+        if "original_tx_hash" in desc:
+            entry["old_tx_hash"] = desc["original_tx_hash"]
+        if "original_kind" in desc:
+            entry["original_kind"] = desc["original_kind"]
     try:
-        audit.write({
-            "chain": chain.name,
-            "from": desc.get("from"),
-            "to": desc.get("to"),
-            "spender": desc.get("spender"),
-            "kind": _category(prepared),
-            "amount_wei": str(desc.get("amount_wei", 0)),
-            "unit": desc.get("amount_unit"),
-            "token_address": desc.get("token_address"),
-            "nonce": prepared.tx.get("nonce"),
-            "gas": prepared.tx.get("gas"),
-            "hash": tx_hash,
-            "caller": caller,
-            "request_id": request_id,
-            "policy_decision": pd,
-            "outcome": outcome,
-        })
+        audit.write(entry)
     except Exception:
         pass
 
@@ -615,6 +666,45 @@ def confirm_and_broadcast(
         raw = sign_transaction(sender_account, prepared.tx)
         tx_hash = broadcast(w3, raw)
     except Exception as e:
+        # Stuck-tx recovery (preserve_nonce=True) has a known benign failure:
+        # the original tx mined while we were preparing the cancel/replace,
+        # so RPC rejects the new tx with "nonce too low". Surface that as
+        # `outcome=superseded` instead of a generic rpc_error — both audit
+        # and the JSON envelope encode the race outcome cleanly.
+        err_msg = str(e).lower()
+        is_superseded = preserve_nonce and (
+            "nonce too low" in err_msg
+            or "already known" in err_msg
+            or "replacement transaction underpriced" in err_msg
+        )
+        if is_superseded:
+            if request_id is not None:
+                try:
+                    idempotency.record(
+                        request_id, fp,
+                        tx_hash=None,
+                        nonce=prepared.tx.get("nonce"),
+                        outcome="superseded",
+                        detail="original_landed_first",
+                        from_address=prepared.description.get("from") or prepared.tx.get("from"),
+                        description=dict(prepared.description),
+                    )
+                except Exception:
+                    pass
+            _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="superseded", request_id=request_id)
+            data = _build_data(prepared, chain, phase="superseded", state=state, extra={
+                "outcome": "superseded",
+                "reason": "original_landed_first",
+                "request_id": request_id,
+                "rpc_error": f"{type(e).__name__}: {e}",
+            })
+            envelope = {"ok": False, "command": cmd, "chain": chain.name, "code": "superseded", "data": data}
+            emit(envelope, lambda _d: info(
+                f"[yellow]superseded[/yellow] — the original tx at nonce "
+                f"{prepared.tx.get('nonce')} landed before this recovery "
+                f"could replace it (nothing to do)."
+            ))
+            raise typer.Exit(code=0) from None
         _audit_event(prepared, chain, decision, caller, tx_hash=None, outcome="rejected", request_id=request_id)
         emit_error(
             "rpc_error",

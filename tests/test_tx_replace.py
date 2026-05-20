@@ -471,3 +471,241 @@ def test_tx_pending_function_body_runs_with_all_names_resolved(monkeypatch, tmp_
 
     assert not isinstance(result.exception, NameError)
     assert result.exit_code == 99
+
+
+# --- Fix coverage: classification, superseded filter, audit enrichment ------
+
+
+def test_classify_table_recognises_tx_cancel_and_tx_replace():
+    """Fix 1: cli/_common._CLASSIFY_TABLE must have tx_cancel / tx_replace rows.
+
+    Without these, audit log + JSON envelope + preview label all read
+    `kind: unknown` for stuck-tx recovery ops, hiding the semantic from
+    forensics and humans. Policy uses its own router so it's unaffected,
+    but the CLI side surface must also distinguish them.
+    """
+    from wallet.cli._common import _category, _kind_machine
+    from wallet.core.tx import PreparedTx
+
+    cancel = PreparedTx(
+        tx={"from": ACCOUNT, "to": ACCOUNT, "value": 0, "nonce": 7},
+        estimated_fee_wei=0,
+        description={"kind": "tx cancel", "is_self_send_for_cancel": True},
+    )
+    assert _category(cancel) == "tx_cancel"
+    assert _kind_machine(cancel) == "tx_cancel"
+
+    replace = PreparedTx(
+        tx={"from": ACCOUNT, "to": OTHER, "value": 1, "nonce": 7},
+        estimated_fee_wei=0,
+        description={"kind": "tx replace", "original_kind": "native transfer"},
+    )
+    assert _category(replace) == "tx_replace"
+    assert _kind_machine(replace) == "tx_replace"
+
+
+def test_list_pending_filters_superseded_when_nonce_consumed_on_chain(isolated_files):
+    """Fix 2: a cancel/replace pushes account nonce past the cached entry.
+
+    The displaced original has no receipt (TransactionNotFound) and its nonce
+    slot is already consumed on chain. Before the fix, list_pending kept
+    showing it as pending forever; after, it filters out by comparing
+    cached.nonce against `eth.getTransactionCount(account, 'latest')`.
+    """
+    from wallet.core.tx_replace import list_pending
+
+    _record_broadcast(request_id="displaced", tx_hash="0x" + "aa" * 32, nonce=5)
+
+    w3 = MagicMock(spec=Web3)
+    w3.eth = MagicMock()
+    # On-chain nonce has advanced to 6 — slot 5 is consumed (by a replacement,
+    # since the cached tx itself returns TransactionNotFound below).
+    w3.eth.get_transaction_count.return_value = 6
+    w3.eth.get_transaction_receipt.side_effect = TransactionNotFound("not found")
+
+    pending = list_pending(w3, ACCOUNT)
+    assert pending == [], "displaced original at consumed nonce must not list as pending"
+
+
+def test_list_pending_keeps_entry_when_chain_nonce_rpc_fails(isolated_files):
+    """Fix 2 graceful degradation: if eth_getTransactionCount errors we fall
+    back to the receipt-only filter — don't drop real pending entries."""
+    from wallet.core.tx_replace import list_pending
+
+    _record_broadcast(request_id="r1", tx_hash="0x" + "bb" * 32, nonce=5)
+
+    w3 = MagicMock(spec=Web3)
+    w3.eth = MagicMock()
+    w3.eth.get_transaction_count.side_effect = RuntimeError("rpc down")
+    w3.eth.get_transaction_receipt.side_effect = TransactionNotFound("not found")
+
+    pending = list_pending(w3, ACCOUNT)
+    assert len(pending) == 1
+    assert pending[0].request_id == "r1"
+
+
+def test_audit_event_enriches_cancel_with_recovery_fields(isolated_files):
+    """Fix 4: audit entry for tx cancel records recovery=cancel + old_tx_hash
+    so a cancel is distinguishable from a regular 0-value self-send in the log."""
+    import json
+    from wallet.cli._common import _audit_event
+    from wallet.core.policy import Decision
+    from wallet.core.tx import PreparedTx
+
+    prepared = PreparedTx(
+        tx={"from": ACCOUNT, "to": ACCOUNT, "value": 0, "nonce": 42, "gas": 21000},
+        estimated_fee_wei=0,
+        description={
+            "kind": "tx cancel",
+            "is_self_send_for_cancel": True,
+            "from": ACCOUNT,
+            "to": ACCOUNT,
+            "amount_wei": 0,
+            "amount_unit": "ETH",
+            "amount_decimals": 18,
+            "old_tx_hash": "0xdead",
+            "cancel_nonce": 42,
+        },
+    )
+    decision = Decision(allowed=True, reason="cancel-allowed", severity="allow")
+
+    _audit_event(
+        prepared, SEPOLIA, decision, "agent",
+        tx_hash="0xnew", outcome="broadcast", request_id="r1",
+    )
+
+    log_lines = (audit.audit_path()).read_text().strip().split("\n")
+    assert len(log_lines) == 1
+    entry = json.loads(log_lines[0])
+    assert entry["kind"] == "tx_cancel"
+    assert entry["recovery"] == "cancel"
+    assert entry["old_tx_hash"] == "0xdead"
+    assert entry["hash"] == "0xnew"
+
+
+def test_audit_event_enriches_replace_with_original_kind(isolated_files):
+    """Fix 4: a replace entry records original_kind + old_tx_hash so the audit
+    log captures what op was being sped up (a fresh send vs aave borrow etc)."""
+    import json
+    from wallet.cli._common import _audit_event
+    from wallet.core.policy import Decision
+    from wallet.core.tx import PreparedTx
+
+    prepared = PreparedTx(
+        tx={"from": ACCOUNT, "to": OTHER, "value": 100, "nonce": 42, "gas": 21000},
+        estimated_fee_wei=0,
+        description={
+            "kind": "tx replace",
+            "is_replacement": True,
+            "from": ACCOUNT,
+            "to": OTHER,
+            "amount_wei": 100,
+            "amount_unit": "ETH",
+            "amount_decimals": 18,
+            "original_tx_hash": "0xorig",
+            "original_kind": "native transfer",
+            "replace_nonce": 42,
+        },
+    )
+    decision = Decision(allowed=True, reason="ok", severity="allow")
+
+    _audit_event(
+        prepared, SEPOLIA, decision, "agent",
+        tx_hash="0xrepl", outcome="broadcast", request_id="r1",
+    )
+
+    log_lines = (audit.audit_path()).read_text().strip().split("\n")
+    assert len(log_lines) == 1
+    entry = json.loads(log_lines[0])
+    assert entry["kind"] == "tx_replace"
+    assert entry["recovery"] == "replace"
+    assert entry["old_tx_hash"] == "0xorig"
+    assert entry["original_kind"] == "native transfer"
+
+
+def test_confirm_and_broadcast_maps_nonce_too_low_to_superseded(isolated_files, monkeypatch):
+    """Fix 3: when the original tx mines while a cancel/replace is in flight,
+    the RPC returns 'nonce too low'. With `preserve_nonce=True` (only used by
+    stuck-tx recovery), this must surface as outcome=superseded, not a raw
+    rpc_error — and idempotency + audit must record it cleanly so an agent
+    retry sees the same envelope without re-broadcasting."""
+    import json
+    from wallet.cli import _common
+    from wallet.cli._common import confirm_and_broadcast
+    from wallet.core.policy import Policy, save_policy
+    from wallet.core.tx import PreparedTx
+    from wallet.storage.state import AccountEntry, WalletState
+
+    # Policy that allows cancel (the recovery op we'll force into superseded).
+    save_policy(Policy(
+        max_per_tx={"ETH": "1.0"},
+        recipient_allowlist=[ACCOUNT, OTHER],
+    ))
+
+    state = WalletState(
+        default_chain="sepolia",
+        accounts=[AccountEntry(
+            name="main", address=ACCOUNT,
+            derivation_path="m/44'/60'/0'/0/0", vault_key="k",
+            default=True,
+        )],
+    )
+
+    prepared = PreparedTx(
+        tx={
+            "from": ACCOUNT, "to": ACCOUNT, "value": 0, "data": "0x",
+            "gas": 21000, "nonce": 42, "chainId": 11155111, "type": 2,
+            "maxFeePerGas": 10**9, "maxPriorityFeePerGas": 10**9,
+        },
+        estimated_fee_wei=21000 * 10**9,
+        description={
+            "kind": "tx cancel",
+            "is_self_send_for_cancel": True,
+            "from": ACCOUNT, "to": ACCOUNT,
+            "amount_wei": 0, "amount_unit": "ETH", "amount_decimals": 18,
+            "cancel_nonce": 42,
+            "old_tx_hash": "0xorig",
+        },
+    )
+
+    # Stub sign + broadcast: broadcast raises "nonce too low" the way an RPC
+    # would when the original landed first.
+    monkeypatch.setattr(_common, "sign_transaction", lambda *_a, **_kw: b"\x00")
+    def _raise_nonce_too_low(*_a, **_kw):
+        raise RuntimeError("nonce too low: next nonce 43, tx nonce 42")
+    monkeypatch.setattr(_common, "broadcast", _raise_nonce_too_low)
+
+    w3 = MagicMock(spec=Web3)
+    w3.eth = MagicMock()
+    # caller is "agent" so policy/idempotency path is exercised in JSON mode.
+    monkeypatch.setattr("wallet.cli._caller.caller_kind", lambda: "agent")
+    monkeypatch.setenv("WALLET_JSON", "1")
+
+    # Force JSON output mode (set by env var, but emit reads it once)
+    from wallet.cli._output import OutputMode
+    monkeypatch.setattr(OutputMode, "json", True)
+
+    import typer
+    with pytest.raises(typer.Exit) as exc_info:
+        confirm_and_broadcast(
+            w3, state, SEPOLIA, state.accounts[0], prepared,
+            dry_run=False, yes=True,
+            request_id="superseded-test",
+            preserve_nonce=True,
+        )
+
+    # Exit 0 — superseded is a benign race outcome, not a failure.
+    assert exc_info.value.exit_code == 0
+
+    # Idempotency entry must record outcome=superseded.
+    raw = json.loads((idempotency.store_path()).read_text())
+    cached = raw["superseded-test"]
+    assert cached["outcome"] == "superseded"
+    assert cached["detail"] == "original_landed_first"
+    assert cached["tx_hash"] is None
+
+    # Audit entry must say superseded too.
+    log_lines = (audit.audit_path()).read_text().strip().split("\n")
+    last = json.loads(log_lines[-1])
+    assert last["outcome"] == "superseded"
+    assert last["kind"] == "tx_cancel"
