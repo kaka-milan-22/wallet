@@ -17,7 +17,8 @@ Uniswap V3 ETH/USDC 0.05% pool on Base，全自动 rate-limited re-mint + Telegr
 | Pool | Uniswap V3 ETH/USDC 0.05% on Base |
 | 初始 range | ±5% (中心 = 当前 ETH 价) |
 | Re-mint 频率上限 | 2 次 / 天 (hard rate limit) |
-| Pause 阈值 | σ_14d > 10% → 全转 Aave USDC (Base) |
+| Pause 阈值 | σ_14d > 15%（慢 EWMA）或 σ_1d > 8%（快 fuse）→ 全转 Aave USDC (Base) |
+| 恢复条件 | σ_14d < 6% AND σ_1d < 5% 持续 48h |
 | 期望年化净 APR | 25% (中位数) |
 | 期望年化收益 | $2100 (中位数) |
 

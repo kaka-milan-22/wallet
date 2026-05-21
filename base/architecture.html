@@ -177,7 +177,7 @@
 <h2 id="overview">1. 总览 — 系统做什么</h2>
 <!-- ═══════════════════════════════════════════════════════════ -->
 
-<p>持有 Uniswap V3 ETH/USDC 0.05% pool 上的一个 ±5% LP position。当 ETH 价格出 range 持续 12h，自动 re-mint 到当前价 ±5%。每日上限 2 次 re-mint。σ_14d &gt; 10% 时全转 Aave USDC（Base）。每个事件 Telegram 通知。</p>
+<p>持有 Uniswap V3 ETH/USDC 0.05% pool 上的一个 ±5% LP position。当 ETH 价格出 range 持续 12h，自动 re-mint 到当前价 ±5%。每日上限 2 次 re-mint。两层 pause 触发器：σ_14d &gt; 15%（慢 EWMA 持续高波动）或 σ_1d &gt; 8%（快 fuse 突发异动）→ 全转 Aave USDC on Base。恢复需双条件满足。每个事件 Telegram 通知。</p>
 
 <table>
   <thead>
@@ -715,18 +715,51 @@ scrape_configs:
         annotations:
           summary: "Re-mint required"
 
-      # 高 vol pause
+      # 慢：14d EWMA σ 持续高波动 → pause to Aave
       - alert: LpHighVolatility
         expr: |
           stddev_over_time(
             (ln(wallet_lp_pool_price) - ln(wallet_lp_pool_price offset 1d))
             [14d:5m]
-          ) > 0.10
+          ) > 0.15
         for: 6h
         labels:
           severity: action_pause
         annotations:
-          summary: "σ_14d > 10%, suspend LP"
+          summary: "σ_14d > 15%, suspend LP"
+
+      # 快：单日 σ 突发异动 → 48h fuse pause（覆盖 EWMA lag）
+      - alert: LpTailEvent
+        expr: |
+          stddev_over_time(
+            (ln(wallet_lp_pool_price) - ln(wallet_lp_pool_price offset 1h))
+            [1d:5m]
+          ) > 0.08
+        for: 30m
+        labels:
+          severity: action_fuse
+        annotations:
+          summary: "σ_1d > 8%, 48h fuse pause"
+
+      # 恢复条件：σ_14d 和 σ_1d 双双回落，持续 48h
+      - alert: LpVolatilityNormalized
+        expr: |
+          (
+            stddev_over_time(
+              (ln(wallet_lp_pool_price) - ln(wallet_lp_pool_price offset 1d))
+              [14d:5m]
+            ) < 0.06
+          ) and (
+            stddev_over_time(
+              (ln(wallet_lp_pool_price) - ln(wallet_lp_pool_price offset 1h))
+              [1d:5m]
+            ) < 0.05
+          )
+        for: 48h
+        labels:
+          severity: action_resume
+        annotations:
+          summary: "vol normalized, safe to resume LP"
 </code></pre>
 
 <h3>alertmanager.yml</h3>
@@ -881,15 +914,17 @@ def telegram_send(msg: str):
     bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
 
 def compute_new_ticks(current_eth_price: float, sigma_14d: float):
-    """按 σ 选 range 半宽。"""
+    """按 σ_14d 选 range 半宽。σ > 15% 走 pause 分支（外层调用前已判断）。"""
     if sigma_14d <= 0.04:
         r = 0.05
     elif sigma_14d <= 0.06:
         r = 0.08
     elif sigma_14d <= 0.08:
         r = 0.12
+    elif sigma_14d <= 0.15:
+        r = 0.22                    # defensive LP — 仍跑赢 Aave ~2pp
     else:
-        return None, None  # pause
+        return None, None           # σ_14d > 15% → pause (caller handles)
 
     p_lower = current_eth_price * (1 - r)
     p_upper = current_eth_price * (1 + r)
@@ -912,7 +947,11 @@ async def receive_alert(req: Request):
         if name == "LpOutOfRange12h":
             await handle_remint()
         elif name == "LpHighVolatility":
-            await handle_pause()
+            await handle_pause(reason="σ_14d > 15%（持续高波动）")
+        elif name == "LpTailEvent":
+            await handle_pause(reason="σ_1d > 8%（tail fuse）", fuse=True)
+        elif name == "LpVolatilityNormalized":
+            await handle_resume()
         elif name == "LpOutOfRangeEarly":
             telegram_send("⏰ Out of range 2h. Will re-mint at 12h if persists.")
     return {"ok": True}
@@ -973,10 +1012,31 @@ async def handle_remint():
         f"tokenId: {new_token_id}"
     )
 
-async def handle_pause():
-    # 调 wallet lp remove → wallet aave supply
-    # 实现略
-    telegram_send("⏸ Paused LP, moved to Aave USDC")
+async def handle_pause(reason: str, fuse: bool = False):
+    """转 LP → Aave USDC。fuse=True 表示是单日 tail event，48h 后自动尝试恢复。"""
+    # 1. 持久化 pause 状态到 state.json
+    state = load_state()
+    state["paused"] = True
+    state["pause_reason"] = reason
+    state["pause_started_at"] = int(time.time())
+    state["pause_fuse_expires_at"] = int(time.time()) + 48*3600 if fuse else None
+    save_state(state)
+
+    # 2. lp remove → aave supply（实现略，~30 行 wallet 调用链）
+    # ...
+
+    telegram_send(f"⏸ Paused LP — {reason}\nFunds → Aave USDC (Base)")
+
+async def handle_resume():
+    """LpVolatilityNormalized 触发：σ 双条件回落 48h，恢复 LP。"""
+    state = load_state()
+    if not state.get("paused"):
+        return  # 没在 pause，忽略
+    # aave withdraw → lp mint with current vol-adaptive r
+    # ...
+    state["paused"] = False
+    save_state(state)
+    telegram_send("✓ Resumed LP — σ normalized for 48h")
 </code></pre>
 
 <h3>breaker.py（rate limit + cooldown，可选独立模块）</h3>
@@ -1129,9 +1189,14 @@ policy.max_per_day = { ETH: 1.0, USDC: 2000 }</code></pre>
       <td>立刻停 launchd scraper + strategy；查代码 tick_to_eth_price</td>
     </tr>
     <tr>
-      <td>Telegram: "Paused, σ=11.x%"</td>
-      <td>市场恐慌期，已自动转 Aave</td>
-      <td>正常。等 σ 回到 &lt; 6% 自动恢复（看 <code>LpVolatilityNormalized</code> alert）</td>
+      <td>Telegram: "Paused (HighVolatility) σ_14d=16%"</td>
+      <td>持续高波动，已自动转 Aave</td>
+      <td>正常。等 σ_14d &lt; 6% AND σ_1d &lt; 5% 持续 48h 自动恢复（<code>LpVolatilityNormalized</code>）</td>
+    </tr>
+    <tr>
+      <td>Telegram: "Tail FUSE triggered, σ_1d=10%"</td>
+      <td>突发异动（新闻 / crash / 暴涨），EWMA 还没反应过来</td>
+      <td>正常。48h fuse 自动到期；如 σ_14d 期间升超 15%，转入持续 pause</td>
     </tr>
     <tr>
       <td>连续 3 次 same direction 触发</td>

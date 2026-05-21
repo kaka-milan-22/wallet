@@ -353,13 +353,14 @@ ETH 价 $2111.55。忽略钱包/操作，只看策略和数学。</p>
   <text x="450" y="470" text-anchor="middle" fill="#888" font-size="10">vol 越高 range 越宽</text>
 
   <line x1="520" y1="320" x2="700" y2="380" stroke="#c46b6b" stroke-width="2" marker-end="url(#arrow-red)"/>
-  <text x="680" y="355" fill="#c46b6b" font-size="11">σ > 10% 或 3 次同向</text>
+  <text x="690" y="350" text-anchor="middle" fill="#c46b6b" font-size="11">σ_14d &gt; 15%</text>
+  <text x="690" y="365" text-anchor="middle" fill="#c46b6b" font-size="11">或 σ_1d &gt; 8%（fuse）</text>
 
   <rect x="560" y="390" width="280" height="100" rx="8" fill="#2a2020" stroke="#c46b6b" stroke-width="1.5"/>
-  <text x="700" y="416" text-anchor="middle" fill="#c46b6b" font-size="13" font-weight="bold">⏸ 暂停 LP</text>
-  <text x="700" y="436" text-anchor="middle" fill="#e4e4e2" font-size="12">资金全转 Aave USDC (Base)</text>
-  <text x="700" y="453" text-anchor="middle" fill="#aaa" font-size="11">3–5% APR，零 IL，零操作</text>
-  <text x="700" y="470" text-anchor="middle" fill="#888" font-size="10">等 σ 回落再回来</text>
+  <text x="700" y="416" text-anchor="middle" fill="#c46b6b" font-size="13" font-weight="bold">⏸ 暂停 LP → Aave</text>
+  <text x="700" y="436" text-anchor="middle" fill="#e4e4e2" font-size="12">USDC supply on Base (~4% APR)</text>
+  <text x="700" y="453" text-anchor="middle" fill="#aaa" font-size="11">慢 alert（EWMA）+ 快 fuse 双触发</text>
+  <text x="700" y="470" text-anchor="middle" fill="#888" font-size="10">恢复条件：σ_14d&lt;6% AND σ_1d&lt;5% 持续 48h</text>
 
   <!-- loop back -->
   <line x1="200" y1="490" x2="200" y2="540" stroke="#7fb069" stroke-width="2"/>
@@ -377,41 +378,57 @@ ETH 价 $2111.55。忽略钱包/操作，只看策略和数学。</p>
 <h2>4. 波动率 → range 宽度 — Base 速查表</h2>
 <!-- ═══════════════════════════════════════ -->
 
-<svg viewBox="0 0 900 280" width="900" height="280">
-  <line x1="450" y1="20" x2="450" y2="250" stroke="#7fb069" stroke-width="1" stroke-dasharray="3,3"/>
+<svg viewBox="0 0 900 360" width="900" height="360">
+  <line x1="450" y1="20" x2="450" y2="320" stroke="#7fb069" stroke-width="1" stroke-dasharray="3,3"/>
 
   <!-- σ = 2% -->
-  <text x="100" y="55" fill="#e4e4e2" font-size="13" font-weight="bold">σ = 2% 极平静</text>
-  <rect x="424" y="50" width="52" height="20" fill="#7fb069" opacity="0.6" stroke="#7fb069"/>
-  <text x="700" y="62" fill="#aaa" font-size="11">range ±3%（极窄）</text>
+  <text x="100" y="45" fill="#e4e4e2" font-size="13" font-weight="bold">σ_14d = 2% 极平静</text>
+  <rect x="424" y="40" width="52" height="20" fill="#7fb069" opacity="0.6" stroke="#7fb069"/>
+  <text x="700" y="52" fill="#aaa" font-size="11">range ±3%（极窄）</text>
 
   <!-- σ = 4% NORMAL ★ -->
-  <text x="100" y="100" fill="#e4e4e2" font-size="13" font-weight="bold">σ = 4% 常态</text>
-  <rect x="397" y="95" width="106" height="20" fill="#7fb069" opacity="0.7" stroke="#7fb069" stroke-width="2"/>
-  <text x="700" y="107" fill="#7fb069" font-size="11" font-weight="bold">range ±5% ★ 推荐</text>
+  <text x="100" y="85" fill="#e4e4e2" font-size="13" font-weight="bold">σ_14d = 4% 常态</text>
+  <rect x="397" y="80" width="106" height="20" fill="#7fb069" opacity="0.7" stroke="#7fb069" stroke-width="2"/>
+  <text x="700" y="92" fill="#7fb069" font-size="11" font-weight="bold">range ±5% ★ 推荐</text>
 
   <!-- σ = 6% -->
-  <text x="100" y="145" fill="#e4e4e2" font-size="13" font-weight="bold">σ = 6% 轻 spike</text>
-  <rect x="365" y="140" width="170" height="20" fill="#d4a64a" opacity="0.5" stroke="#d4a64a"/>
-  <text x="700" y="152" fill="#aaa" font-size="11">range ±8%</text>
+  <text x="100" y="125" fill="#e4e4e2" font-size="13" font-weight="bold">σ_14d = 6% 轻 spike</text>
+  <rect x="365" y="120" width="170" height="20" fill="#d4a64a" opacity="0.5" stroke="#d4a64a"/>
+  <text x="700" y="132" fill="#aaa" font-size="11">range ±8%</text>
 
   <!-- σ = 8% -->
-  <text x="100" y="190" fill="#e4e4e2" font-size="13" font-weight="bold">σ = 8% 恐慌/狂欢</text>
-  <rect x="320" y="185" width="260" height="20" fill="#d4a64a" opacity="0.3" stroke="#d4a64a"/>
-  <text x="700" y="197" fill="#aaa" font-size="11">range ±12%</text>
+  <text x="100" y="165" fill="#e4e4e2" font-size="13" font-weight="bold">σ_14d = 8% 恐慌/狂欢</text>
+  <rect x="320" y="160" width="260" height="20" fill="#d4a64a" opacity="0.3" stroke="#d4a64a"/>
+  <text x="700" y="172" fill="#aaa" font-size="11">range ±12%</text>
 
-  <!-- σ > 10% -->
-  <text x="100" y="235" fill="#e4e4e2" font-size="13" font-weight="bold">σ &gt; 10% crash 模式</text>
-  <text x="450" y="235" text-anchor="middle" fill="#c46b6b" font-size="13" font-weight="bold">━━━ 暂停 LP，全转 Aave USDC ━━━</text>
+  <!-- σ ∈ (8, 15] DEFENSIVE LP -->
+  <text x="100" y="205" fill="#e4e4e2" font-size="13" font-weight="bold">σ_14d ∈ (8, 15]</text>
+  <rect x="225" y="200" width="450" height="20" fill="#d4a64a" opacity="0.2" stroke="#d4a64a"/>
+  <text x="700" y="212" fill="#d4a64a" font-size="11">range ±20–25%（仍跑赢 Aave ~2pp）</text>
+
+  <!-- σ > 15% PAUSE -->
+  <text x="100" y="250" fill="#e4e4e2" font-size="13" font-weight="bold">σ_14d &gt; 15% 持续高波动</text>
+  <text x="450" y="250" text-anchor="middle" fill="#c46b6b" font-size="12" font-weight="bold">━━━ 暂停 LP → Aave USDC ━━━</text>
+
+  <!-- σ_1d > 8% TAIL FUSE -->
+  <text x="100" y="285" fill="#e4e4e2" font-size="13" font-weight="bold">σ_1d &gt; 8%（tail fuse）</text>
+  <text x="450" y="285" text-anchor="middle" fill="#c46b6b" font-size="12" font-weight="bold">━━━ 立即 48h pause（覆盖 EWMA lag）━━━</text>
 
   <!-- price axis -->
-  <line x1="280" y1="265" x2="620" y2="265" stroke="#555" stroke-width="1"/>
-  <text x="280" y="278" text-anchor="middle" fill="#888" font-size="10">−15%</text>
-  <text x="450" y="278" text-anchor="middle" fill="#7fb069" font-size="10">$2111</text>
-  <text x="620" y="278" text-anchor="middle" fill="#888" font-size="10">+15%</text>
+  <line x1="170" y1="335" x2="730" y2="335" stroke="#555" stroke-width="1"/>
+  <text x="170" y="350" text-anchor="middle" fill="#888" font-size="10">−25%</text>
+  <text x="450" y="350" text-anchor="middle" fill="#7fb069" font-size="10">$2111</text>
+  <text x="730" y="350" text-anchor="middle" fill="#888" font-size="10">+25%</text>
 </svg>
 
 <div class="callout blue">
+<strong>两层 pause 触发器</strong>：<br>
+• <strong>慢 alert</strong>（σ_14d &gt; 15% 持续 6h）— 应对持续高波动。一年 ~3-5 天触发。<br>
+• <strong>快 fuse</strong>（σ_1d &gt; 8% 持续 30 分钟）— 应对突发异动。覆盖 EWMA 反应滞后的 1-2 天 gap。<br>
+任一触发即 pause，<strong>恢复条件双约束</strong>：σ_14d &lt; 6% AND σ_1d &lt; 5% 持续 48h。
+</div>
+
+<div class="callout amber">
 <strong>对比 mainnet</strong>：mainnet σ=4% 用 ±20%；Base σ=4% 用 ±5%。差距 4x。原因：mainnet 必须避免 gas 频繁烧，Base 不用。
 </div>
 
@@ -508,12 +525,13 @@ ETH 价 $2111.55。忽略钱包/操作，只看策略和数学。</p>
     <tr><th>事件</th><th>ETH 价</th><th>σ</th><th>动作</th><th>新 range</th></tr>
   </thead>
   <tbody>
-    <tr><td>Month 1 开始</td><td>$2111</td><td>4%</td><td class="green">首次 mint</td><td>±5% = $2005–$2217</td></tr>
-    <tr><td>Month 1–4（每周）</td><td>跟随 price</td><td>4%</td><td class="amber">每周 1 次 re-mint</td><td>中心追 price，宽度 ±5%</td></tr>
+    <tr><td>Month 1 开始</td><td>$2111</td><td>σ_14d=4%</td><td class="green">首次 mint</td><td>±5% = $2005–$2217</td></tr>
+    <tr><td>Month 1–4（每周）</td><td>跟随 price</td><td>σ_14d=4–6%</td><td class="amber">每周 1 次 re-mint</td><td>中心追 price，宽度 ±5–8%</td></tr>
     <tr><td>累计 16 次 re-mint</td><td>—</td><td>—</td><td class="muted">gas 共 $4.80</td><td>—</td></tr>
-    <tr><td>Month 5 初</td><td>$1750（crash）</td><td class="red">12%</td><td class="red">PAUSE → Aave USDC</td><td>—</td></tr>
-    <tr><td>Month 5 末</td><td>$1800（σ 回 5%）</td><td>5%</td><td class="amber">恢复 mint，r=±10%</td><td>$1620–$1980</td></tr>
-    <tr><td>Month 6 末</td><td>$1850</td><td>4%</td><td class="green">in-range</td><td>—</td></tr>
+    <tr><td>Month 5 初（突发新闻）</td><td>$1750</td><td class="red">σ_1d=11% ↑</td><td class="red">FUSE → 48h pause Aave</td><td>—</td></tr>
+    <tr><td>Month 5 中</td><td>$1700</td><td class="red">σ_14d 升到 9%</td><td class="amber">FUSE 到期，但 σ_14d 仍偏高</td><td>恢复后 r=±20% 防御性</td></tr>
+    <tr><td>Month 5 末</td><td>$1800</td><td>σ_14d=6%, σ_1d=4%</td><td class="amber">双条件 not yet 满足，继续 ±20%</td><td>—</td></tr>
+    <tr><td>Month 6 中</td><td>$1850</td><td>σ_14d=5%, σ_1d=3%</td><td class="green">双条件清除 48h → 恢复 ±5%</td><td>$1758–$1942</td></tr>
   </tbody>
 </table>
 
@@ -541,13 +559,13 @@ ETH 价 $2111.55。忽略钱包/操作，只看策略和数学。</p>
   <div class="rule-card">
     <div class="num">RULE 3</div>
     <div class="title blue">看 σ 选新 range</div>
-    <div class="desc">σ 翻倍 → range 翻倍。σ ≤ 4% 用 ±5%；σ ≤ 8% 用 ±10%；σ > 10% 暂停。</div>
+    <div class="desc">σ 翻倍 → range 翻倍。σ ≤ 4% 用 ±5%；σ ≤ 8% 用 ±12%；σ ∈ (8,15] 用 ±20–25% 防御性 LP。</div>
   </div>
 
   <div class="rule-card">
     <div class="num">RULE 4</div>
-    <div class="title red">σ > 10% 暂停 LP</div>
-    <div class="desc">即使 gas 便宜，crash 也容易触发连续止损。全转 Aave USDC（Base 上 3–5% APR）等 vol 回落。</div>
+    <div class="title red">σ_14d &gt; 15% 或 σ_1d &gt; 8% 暂停</div>
+    <div class="desc">慢 EWMA + 快 fuse 双触发。LP 数学在 σ &gt; 15% 真不如 Aave 时才撤。fuse 防 EWMA 反应滞后。恢复需 σ_14d&lt;6% AND σ_1d&lt;5% 持续 48h。</div>
   </div>
 
   <div class="rule-card">
