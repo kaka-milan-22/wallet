@@ -7,7 +7,7 @@ Uniswap V3 ETH/USDC 0.05% pool on Base，全自动 rate-limited re-mint + Telegr
 | 文件 | 用途 |
 |---|---|
 | `architecture.html` | **主文档** — 架构图 / 机器配置 / 服务清单 / 部署步骤 / 代码骨架 / 运维 runbook |
-| `../v3-lp-range-strategy-base.html` | 策略数学推导（ranges, vol-adaptive, 收益模型） |
+| `v3-lp-range-strategy-base.html` | 策略数学推导（ranges, vol-adaptive, 收益模型） |
 
 ## 核心数据
 
