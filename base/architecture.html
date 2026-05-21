@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Base LP 自动化 — 架构与部署</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background: #16181c;
+    color: #e4e4e2;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", sans-serif;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem 2.5rem 4rem;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  h1 {
+    color: #f0f0ee;
+    font-size: 1.85rem;
+    border-bottom: 1px solid #2d2f33;
+    padding-bottom: 0.6rem;
+    margin-top: 0;
+  }
+  h1 .tag {
+    display: inline-block;
+    background: #1d3a5f;
+    color: #6d9dc5;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.6em;
+    margin-left: 0.6rem;
+    vertical-align: middle;
+    font-weight: normal;
+  }
+  h2 {
+    color: #f0f0ee;
+    font-size: 1.35rem;
+    margin-top: 3rem;
+    border-left: 3px solid #6d9dc5;
+    padding-left: 0.8rem;
+  }
+  h3 {
+    color: #d4d4d0;
+    font-size: 1.1rem;
+    margin-top: 2rem;
+  }
+  h4 {
+    color: #b8b8b2;
+    font-size: 0.98rem;
+    margin-top: 1.5rem;
+    margin-bottom: 0.6rem;
+  }
+  p, li { color: #cccccc; }
+  strong { color: #f0f0ee; }
+  code {
+    background: #1f2126;
+    padding: 0.12rem 0.42rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+    color: #d4d4d0;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  pre {
+    background: #1a1c20;
+    border: 1px solid #2d2f33;
+    border-radius: 4px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    line-height: 1.5;
+    font-size: 0.86em;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    color: #d4d4d0;
+  }
+  .green  { color: #7fb069; }
+  .amber  { color: #d4a64a; }
+  .red    { color: #c46b6b; }
+  .blue   { color: #6d9dc5; }
+  .muted  { color: #888; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+  th, td {
+    border: 1px solid #2d2f33;
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    color: #d4d4d0;
+    vertical-align: top;
+  }
+  th { background: #1f2126; color: #f0f0ee; }
+  tr:nth-child(even) td { background: #181a1e; }
+  .callout {
+    background: #1d2024;
+    border-left: 3px solid #6d9dc5;
+    padding: 0.75rem 1.2rem;
+    margin: 1.5rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout.green { border-left-color: #7fb069; }
+  .callout.amber { border-left-color: #d4a64a; }
+  .callout.red { border-left-color: #c46b6b; }
+  svg { background: transparent; display: block; margin: 1.5rem auto; max-width: 100%; }
+  .toc {
+    background: #1a1c20;
+    border: 1px solid #2d2f33;
+    border-radius: 4px;
+    padding: 1rem 1.5rem;
+    margin: 1.5rem 0;
+    columns: 2;
+    column-gap: 2rem;
+  }
+  .toc ol { margin: 0; padding-left: 1.2rem; }
+  .toc li { color: #aaa; font-size: 0.92em; line-height: 1.8; }
+  .toc a { color: #6d9dc5; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; color: #8db5d8; }
+  .footer-note {
+    color: #777;
+    font-size: 0.85em;
+    margin-top: 3rem;
+    border-top: 1px solid #2d2f33;
+    padding-top: 1rem;
+  }
+  .badge {
+    display: inline-block;
+    padding: 0.12rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.78em;
+    font-weight: bold;
+    margin-right: 0.3rem;
+  }
+  .badge.req { background: #c46b6b33; color: #c46b6b; border: 1px solid #c46b6b66; }
+  .badge.rec { background: #d4a64a33; color: #d4a64a; border: 1px solid #d4a64a66; }
+  .badge.opt { background: #6d9dc533; color: #6d9dc5; border: 1px solid #6d9dc566; }
+  .grid-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .grid-cards .card {
+    background: #1f2126;
+    border: 1px solid #2d2f33;
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+  }
+  .grid-cards .card h4 { margin-top: 0; color: #f0f0ee; }
+</style>
+</head>
+<body>
+
+<h1>Base LP 自动化 <span class="tag">$8444 / Uniswap V3 ETH/USDC 0.05%</span></h1>
+<p class="muted">从 0 部署到 Base 主网 production 的完整方案。三周时间线，~300 行代码，~$5/月运维成本。</p>
+
+
+<div class="toc">
+<ol>
+  <li><a href="#overview">总览 — 系统做什么</a></li>
+  <li><a href="#arch">架构图</a></li>
+  <li><a href="#host">机器配置 — 跑在哪里</a></li>
+  <li><a href="#services">服务清单</a></li>
+  <li><a href="#network">网络 / 防火墙</a></li>
+  <li><a href="#layout">文件系统 layout</a></li>
+  <li><a href="#deploy">部署步骤（按顺序）</a></li>
+  <li><a href="#configs">配置文件</a></li>
+  <li><a href="#code">代码骨架</a></li>
+  <li><a href="#telegram">Telegram bot 设置</a></li>
+  <li><a href="#sepolia">Sepolia 演练 checklist</a></li>
+  <li><a href="#cutover">Base 切上线 + caps 收紧</a></li>
+  <li><a href="#runbook">运维 runbook</a></li>
+</ol>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="overview">1. 总览 — 系统做什么</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<p>持有 Uniswap V3 ETH/USDC 0.05% pool 上的一个 ±5% LP position。当 ETH 价格出 range 持续 12h，自动 re-mint 到当前价 ±5%。每日上限 2 次 re-mint。σ_14d &gt; 10% 时全转 Aave USDC（Base）。每个事件 Telegram 通知。</p>
+
+<table>
+  <thead>
+    <tr><th>组件</th><th>责任</th><th>触发频率</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>scraper.py</code></td>
+      <td>读 Base RPC：pool slot0() + position 状态，输出 Prometheus metrics</td>
+      <td class="green">每 5 分钟（cron 或 systemd timer）</td>
+    </tr>
+    <tr>
+      <td><code>Prometheus</code></td>
+      <td>存储时序、计算 14d σ、运行 alert rules</td>
+      <td class="muted">常驻</td>
+    </tr>
+    <tr>
+      <td><code>Alertmanager</code></td>
+      <td>路由 alert 到 strategy.py 的 webhook 端点</td>
+      <td class="muted">常驻</td>
+    </tr>
+    <tr>
+      <td><code>strategy.py</code></td>
+      <td>webhook server。收到 alert → 查 rate limit → 算新 tick → 调 <code>wallet</code> CLI</td>
+      <td class="amber">事件触发</td>
+    </tr>
+    <tr>
+      <td><code>wallet</code> CLI</td>
+      <td>signed broadcast，policy gate（caps + allowlist）兜底</td>
+      <td class="amber">strategy.py 调用</td>
+    </tr>
+    <tr>
+      <td>Telegram bot</td>
+      <td>通知通道（成功 / 失败 / blocked / pause / 早期出 range 提醒）</td>
+      <td class="muted">每事件一条</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="arch">2. 架构图</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<svg viewBox="0 0 1100 720" width="1100" height="720">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#aaa"/>
+    </marker>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7fb069"/>
+    </marker>
+    <marker id="arr-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d4a64a"/>
+    </marker>
+  </defs>
+
+  <!-- External: Base RPC -->
+  <rect x="50" y="30" width="280" height="60" rx="6" fill="#1d2228" stroke="#6d9dc5" stroke-width="1.5"/>
+  <text x="190" y="55" text-anchor="middle" fill="#6d9dc5" font-size="14" font-weight="bold">Base RPC</text>
+  <text x="190" y="73" text-anchor="middle" fill="#aaa" font-size="10">mainnet.base.org + Alchemy backup</text>
+  <text x="190" y="86" text-anchor="middle" fill="#aaa" font-size="10">(pool slot0 / position info)</text>
+
+  <!-- External: Coingecko (vol cross-check) -->
+  <rect x="380" y="30" width="280" height="60" rx="6" fill="#1d2228" stroke="#6d9dc5" stroke-width="1.5"/>
+  <text x="520" y="55" text-anchor="middle" fill="#6d9dc5" font-size="14" font-weight="bold">Coingecko / Binance API</text>
+  <text x="520" y="73" text-anchor="middle" fill="#aaa" font-size="10">(ETH/USD reference, vol cross-check)</text>
+
+  <!-- External: Aave Pool on Base -->
+  <rect x="710" y="30" width="280" height="60" rx="6" fill="#1d2228" stroke="#6d9dc5" stroke-width="1.5"/>
+  <text x="850" y="55" text-anchor="middle" fill="#6d9dc5" font-size="14" font-weight="bold">Aave V3 Pool (Base)</text>
+  <text x="850" y="73" text-anchor="middle" fill="#aaa" font-size="10">pause 时 USDC supply（3-5% APR）</text>
+
+  <!-- HOST border -->
+  <rect x="40" y="120" width="1020" height="450" rx="10" fill="none" stroke="#2d2f33" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="60" y="145" fill="#888" font-size="12" font-style="italic">HOST — Mac mini / OrbStack 或 $5/mo VPS</text>
+
+  <!-- scraper -->
+  <rect x="80" y="170" width="200" height="80" rx="6" fill="#1f2a1f" stroke="#7fb069" stroke-width="1.5"/>
+  <text x="180" y="195" text-anchor="middle" fill="#7fb069" font-size="13" font-weight="bold">scraper.py</text>
+  <text x="180" y="213" text-anchor="middle" fill="#aaa" font-size="10">每 5 分钟拉</text>
+  <text x="180" y="227" text-anchor="middle" fill="#aaa" font-size="10">pool 价 + position 状态</text>
+  <text x="180" y="241" text-anchor="middle" fill="#888" font-size="9">cron 或 systemd timer</text>
+
+  <!-- Prometheus -->
+  <rect x="340" y="170" width="200" height="80" rx="6" fill="#2a2520" stroke="#d4a64a" stroke-width="1.5"/>
+  <text x="440" y="195" text-anchor="middle" fill="#d4a64a" font-size="13" font-weight="bold">Prometheus</text>
+  <text x="440" y="213" text-anchor="middle" fill="#aaa" font-size="10">scrape :9100/metrics</text>
+  <text x="440" y="227" text-anchor="middle" fill="#aaa" font-size="10">retain 30d, 14d σ 计算</text>
+  <text x="440" y="241" text-anchor="middle" fill="#888" font-size="9">:9090</text>
+
+  <!-- Alertmanager -->
+  <rect x="600" y="170" width="200" height="80" rx="6" fill="#2a2520" stroke="#d4a64a" stroke-width="1.5"/>
+  <text x="700" y="195" text-anchor="middle" fill="#d4a64a" font-size="13" font-weight="bold">Alertmanager</text>
+  <text x="700" y="213" text-anchor="middle" fill="#aaa" font-size="10">route → strategy webhook</text>
+  <text x="700" y="227" text-anchor="middle" fill="#aaa" font-size="10">repeat_interval=24h</text>
+  <text x="700" y="241" text-anchor="middle" fill="#888" font-size="9">:9093</text>
+
+  <!-- strategy.py -->
+  <rect x="860" y="170" width="160" height="80" rx="6" fill="#1f2a1f" stroke="#7fb069" stroke-width="1.5"/>
+  <text x="940" y="195" text-anchor="middle" fill="#7fb069" font-size="13" font-weight="bold">strategy.py</text>
+  <text x="940" y="213" text-anchor="middle" fill="#aaa" font-size="10">webhook server</text>
+  <text x="940" y="227" text-anchor="middle" fill="#aaa" font-size="10">FastAPI :8080</text>
+  <text x="940" y="241" text-anchor="middle" fill="#888" font-size="9">systemd service</text>
+
+  <!-- wallet CLI -->
+  <rect x="380" y="350" width="340" height="100" rx="6" fill="#1d2228" stroke="#6d9dc5" stroke-width="2"/>
+  <text x="550" y="378" text-anchor="middle" fill="#6d9dc5" font-size="14" font-weight="bold">wallet CLI (kk's repo, 1.07)</text>
+  <text x="550" y="398" text-anchor="middle" fill="#aaa" font-size="11">subprocess.run(["wallet", "lp", "mint", ...])</text>
+  <text x="550" y="416" text-anchor="middle" fill="#d4a64a" font-size="11">policy gate → caps + allowlist + mev_exposure check</text>
+  <text x="550" y="432" text-anchor="middle" fill="#7fb069" font-size="11">idempotency + audit log + simulate-before-sign</text>
+
+  <!-- state.json -->
+  <rect x="80" y="350" width="200" height="100" rx="6" fill="#1a1c20" stroke="#777" stroke-width="1"/>
+  <text x="180" y="375" text-anchor="middle" fill="#cccccc" font-size="12" font-weight="bold">state.json</text>
+  <text x="180" y="395" text-anchor="middle" fill="#888" font-size="10">rate limit counter</text>
+  <text x="180" y="409" text-anchor="middle" fill="#888" font-size="10">{date, remints_today}</text>
+  <text x="180" y="427" text-anchor="middle" fill="#888" font-size="9">~/work/lp/state.json</text>
+
+  <!-- wallet state -->
+  <rect x="800" y="350" width="220" height="100" rx="6" fill="#1a1c20" stroke="#777" stroke-width="1"/>
+  <text x="910" y="375" text-anchor="middle" fill="#cccccc" font-size="12" font-weight="bold">~/Library/Application</text>
+  <text x="910" y="390" text-anchor="middle" fill="#cccccc" font-size="12" font-weight="bold">Support/wallet/</text>
+  <text x="910" y="408" text-anchor="middle" fill="#888" font-size="10">policy.json (caps)</text>
+  <text x="910" y="421" text-anchor="middle" fill="#888" font-size="10">chains.json (base config)</text>
+  <text x="910" y="434" text-anchor="middle" fill="#888" font-size="10">idempotency.json, audit.log</text>
+
+  <!-- Telegram -->
+  <rect x="380" y="500" width="340" height="50" rx="6" fill="#28202a" stroke="#a989c2" stroke-width="1.5"/>
+  <text x="550" y="525" text-anchor="middle" fill="#a989c2" font-size="13" font-weight="bold">Telegram bot</text>
+  <text x="550" y="542" text-anchor="middle" fill="#aaa" font-size="10">每个事件一条消息（成功/失败/blocked/pause/出range提醒）</text>
+
+  <!-- arrows -->
+  <!-- Base RPC -> scraper -->
+  <line x1="180" y1="90" x2="180" y2="165" stroke="#7fb069" stroke-width="2" marker-end="url(#arr-green)"/>
+  <text x="190" y="125" fill="#888" font-size="10">read</text>
+
+  <!-- Coingecko -> scraper (cross-check, dashed) -->
+  <line x1="520" y1="90" x2="220" y2="165" stroke="#6d9dc5" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="380" y="135" fill="#888" font-size="10">optional cross-check</text>
+
+  <!-- scraper -> prometheus -->
+  <line x1="280" y1="210" x2="335" y2="210" stroke="#d4a64a" stroke-width="2" marker-end="url(#arr-amber)"/>
+  <text x="307" y="200" fill="#888" font-size="9">:9100</text>
+
+  <!-- prometheus -> alertmanager -->
+  <line x1="540" y1="210" x2="595" y2="210" stroke="#d4a64a" stroke-width="2" marker-end="url(#arr-amber)"/>
+  <text x="567" y="200" fill="#888" font-size="9">alerts</text>
+
+  <!-- alertmanager -> strategy -->
+  <line x1="800" y1="210" x2="855" y2="210" stroke="#d4a64a" stroke-width="2" marker-end="url(#arr-amber)"/>
+  <text x="827" y="200" fill="#888" font-size="9">POST</text>
+
+  <!-- strategy -> wallet -->
+  <line x1="940" y1="250" x2="720" y2="345" stroke="#7fb069" stroke-width="2" marker-end="url(#arr-green)"/>
+  <text x="850" y="295" fill="#888" font-size="10">subprocess</text>
+
+  <!-- strategy -> state -->
+  <line x1="860" y1="240" x2="280" y2="350" stroke="#7fb069" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr-green)"/>
+  <text x="500" y="290" fill="#888" font-size="10">read/write rate limit</text>
+
+  <!-- wallet -> base RPC (broadcast) -->
+  <line x1="550" y1="350" x2="270" y2="93" stroke="#7fb069" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr-green)"/>
+  <text x="430" y="220" fill="#7fb069" font-size="10">broadcast (sequencer)</text>
+
+  <!-- wallet -> aave -->
+  <line x1="720" y1="380" x2="850" y2="93" stroke="#6d9dc5" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="830" y="280" fill="#6d9dc5" font-size="10" transform="rotate(-65 830 280)">pause 时 supply</text>
+
+  <!-- wallet/strategy -> Telegram -->
+  <line x1="550" y1="450" x2="550" y2="495" stroke="#a989c2" stroke-width="2" marker-end="url(#arr-amber)"/>
+  <text x="560" y="478" fill="#888" font-size="10">audit events</text>
+
+  <!-- Telegram -> outside -->
+  <line x1="550" y1="550" x2="550" y2="600" stroke="#a989c2" stroke-width="2" marker-end="url(#arr-amber)"/>
+  <text x="500" y="610" fill="#a989c2" font-size="11" font-weight="bold">→ 你的手机 📱</text>
+
+  <!-- legend -->
+  <rect x="40" y="640" width="1020" height="70" fill="#1a1c20" stroke="#2d2f33" stroke-width="1" rx="4"/>
+  <text x="60" y="660" fill="#888" font-size="11" font-weight="bold">数据流图例：</text>
+  <line x1="170" y1="657" x2="200" y2="657" stroke="#7fb069" stroke-width="2"/>
+  <text x="210" y="660" fill="#aaa" font-size="11">代码 / subprocess 调用</text>
+  <line x1="380" y1="657" x2="410" y2="657" stroke="#d4a64a" stroke-width="2"/>
+  <text x="420" y="660" fill="#aaa" font-size="11">HTTP（metrics / webhook）</text>
+  <line x1="640" y1="657" x2="670" y2="657" stroke="#6d9dc5" stroke-width="2"/>
+  <text x="680" y="660" fill="#aaa" font-size="11">外部 RPC / API（链 + CEX）</text>
+  <line x1="900" y1="657" x2="930" y2="657" stroke="#a989c2" stroke-width="2"/>
+  <text x="940" y="660" fill="#aaa" font-size="11">Telegram 通知</text>
+
+  <line x1="170" y1="685" x2="200" y2="685" stroke="#7fb069" stroke-width="1.5" stroke-dasharray="3,3"/>
+  <text x="210" y="688" fill="#aaa" font-size="11">文件 I/O（state.json / wallet 数据）</text>
+</svg>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="host">3. 机器配置 — 跑在哪里</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<p>整套 stack 资源消耗很轻，单机 1 vCPU / 1 GB RAM 就够。两个推荐方案：</p>
+
+<h3>方案 A（推荐）：Mac mini + OrbStack <span class="badge rec">REC</span></h3>
+
+<table>
+  <tbody>
+    <tr><td style="width:30%">硬件</td><td>已有 Mac mini (M4, 16 GB) — 0 增量成本</td></tr>
+    <tr><td>容器</td><td>OrbStack（已装）跑 docker-compose 起 Prometheus + Alertmanager</td></tr>
+    <tr><td>Python 代码</td><td>原生跑（用 uv），不进容器，方便调试</td></tr>
+    <tr><td>系统</td><td>macOS 26.4.1 Tahoe</td></tr>
+    <tr><td>持续运行</td><td><code>pmset -a sleep 0 displaysleep 0 disksleep 0</code>（禁睡眠）；屏保 OK</td></tr>
+    <tr><td>外部访问</td><td>不需要 inbound（Telegram outbound only）</td></tr>
+  </tbody>
+</table>
+
+<div class="callout amber">
+<strong>风险</strong>：Mac mini 偶发重启 / 系统更新会中断 cron + systemd。最坏情况：错过一次 re-mint 窗口，损失 ~$50。可接受。<br>
+<strong>缓解</strong>：每天 Telegram 通知"scraper heartbeat"，超过 30min 没消息 = 系统挂，去看一眼。
+</div>
+
+<h3>方案 B（更稳）：$5/月 VPS</h3>
+
+<table>
+  <tbody>
+    <tr><td style="width:30%">推荐</td><td>Hetzner CX22（€4.5/月）/ DigitalOcean basic（$6/月）</td></tr>
+    <tr><td>规格</td><td>2 vCPU / 4 GB RAM / 40 GB SSD（绰绰有余）</td></tr>
+    <tr><td>系统</td><td>Ubuntu 22.04 LTS</td></tr>
+    <tr><td>位置</td><td>选离 Base RPC 近的（欧洲 / 美东都行）</td></tr>
+    <tr><td>访问</td><td>SSH + Tailscale（可选）</td></tr>
+  </tbody>
+</table>
+
+<div class="callout green">
+<strong>优势</strong>：99.9% uptime，物理上隔离个人 LP infra 和工作环境。$60/年 vs $2100/年 LP 收入，可忽略成本。
+</div>
+
+<p class="muted">本文档其余部分按 <strong>方案 A（Mac mini + OrbStack）</strong> 展开。VPS 路径几乎一样，把 "macOS + brew + launchctl" 换成 "Ubuntu + apt + systemd"。</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="services">4. 服务清单</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="grid-cards">
+
+  <div class="card">
+    <h4><span class="badge req">REQ</span> wallet CLI</h4>
+    <p class="muted">kaka-milan-22/wallet@1.07 已 ship。<br>
+    <code>uv run wallet --help</code> 通则 OK。<br>
+    chains.json 加 base 条目，policy.json 加 base 资产 allowlist。</p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge req">REQ</span> Python 3.13 + uv</h4>
+    <p class="muted">已装（per CLAUDE.md）。<br>
+    scraper.py + strategy.py 都用 uv run。<br>
+    依赖：<code>web3 fastapi uvicorn prometheus-client requests python-telegram-bot</code></p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge req">REQ</span> Prometheus</h4>
+    <p class="muted">OrbStack docker-compose 起。<br>
+    Port: 9090（本地 only）<br>
+    Retention: 30d（覆盖 14d σ window 一倍）<br>
+    Image: <code>prom/prometheus:v2.55</code></p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge req">REQ</span> Alertmanager</h4>
+    <p class="muted">同 docker-compose。<br>
+    Port: 9093（本地 only）<br>
+    Image: <code>prom/alertmanager:v0.27</code><br>
+    config: webhook → strategy.py :8080</p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge rec">REC</span> Grafana</h4>
+    <p class="muted">同 docker-compose。<br>
+    Port: 3000<br>
+    Image: <code>grafana/grafana:11.3</code><br>
+    单个 dashboard：pool 价 + position 状态 + fee 累积。</p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge req">REQ</span> Telegram bot</h4>
+    <p class="muted">通过 @BotFather 创建一个 bot；拿到 token；<br>
+    创建一个 channel 或直接 DM 模式；<br>
+    chat_id 在配置文件里。</p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge opt">OPT</span> Tailscale</h4>
+    <p class="muted">如果 Grafana / Prometheus 想外网访问。<br>
+    Mac mini 跑 Tailscale node，手机也跑，私有 mesh 内访问。<br>
+    本地 only 也行。</p>
+  </div>
+
+  <div class="card">
+    <h4><span class="badge opt">OPT</span> node_exporter</h4>
+    <p class="muted">监控 Mac mini 自身（CPU / 磁盘 / mem）。<br>
+    macOS 用 <code>brew install prometheus-node-exporter</code><br>
+    可选，对策略本身不必要。</p>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="network">5. 网络 / 防火墙</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h4>Outbound（必须放通）</h4>
+
+<table>
+  <thead><tr><th>目标</th><th>端口</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td><code>mainnet.base.org</code></td><td>443</td><td>Base RPC（pool 读 + broadcast）</td></tr>
+    <tr><td><code>base.gateway.alchemy.com</code> 或类似</td><td>443</td><td>backup RPC</td></tr>
+    <tr><td><code>api.coingecko.com</code></td><td>443</td><td>ETH 价 cross-check（可选）</td></tr>
+    <tr><td><code>api.telegram.org</code></td><td>443</td><td>Telegram bot 发消息</td></tr>
+  </tbody>
+</table>
+
+<h4>Inbound（本地 only，<strong>不暴露公网</strong>）</h4>
+
+<table>
+  <thead><tr><th>服务</th><th>端口</th><th>访问者</th></tr></thead>
+  <tbody>
+    <tr><td>Prometheus</td><td>9090</td><td>本机 only（127.0.0.1）</td></tr>
+    <tr><td>Alertmanager</td><td>9093</td><td>本机 only</td></tr>
+    <tr><td>strategy.py webhook</td><td>8080</td><td>本机 only（接 alertmanager）</td></tr>
+    <tr><td>Grafana</td><td>3000</td><td>本机 + Tailscale（可选）</td></tr>
+    <tr><td>scraper /metrics</td><td>9100</td><td>本机（Prometheus scrape）</td></tr>
+  </tbody>
+</table>
+
+<div class="callout red">
+<strong>关键</strong>：所有 inbound 端口 bind 到 <code>127.0.0.1</code>，不要 <code>0.0.0.0</code>。strategy.py 接收 alertmanager webhook 时也只本地通信。这套系统不需要任何公网入站。
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="layout">6. 文件系统 layout</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<pre><code>~/work/lp/                          # 项目根目录
+├── pyproject.toml                  # uv 管理依赖
+├── scraper.py                      # ~80 行
+├── strategy.py                     # ~150 行
+├── breaker.py                      # ~50 行（rate limit + 简单 SQLite/JSON）
+├── telegram_notify.py              # ~30 行
+├── state.json                      # rate limit counter（自动生成）
+├── logs/
+│   ├── scraper.log
+│   └── strategy.log
+└── docker/
+    ├── docker-compose.yml          # Prometheus + Alertmanager + Grafana
+    ├── prometheus.yml              # scrape config
+    ├── alert-rules.yml             # 3 条 alert 规则
+    ├── alertmanager.yml            # webhook 路由
+    └── grafana/
+        └── dashboards/lp.json
+
+~/Library/Application Support/wallet/    # wallet 自己的数据目录
+├── chains.json                     # 加 base 条目
+├── policy.json                     # caps + allowlist for base 资产
+├── idempotency.json
+└── audit.log
+</code></pre>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="deploy">7. 部署步骤（按顺序）</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h3>Step 1 — 装基础设施（30 分钟）</h3>
+
+<pre><code># 1.1 创建项目目录
+mkdir -p ~/work/lp/{docker/grafana/dashboards,logs}
+cd ~/work/lp
+
+# 1.2 uv 初始化
+uv init --no-readme
+uv add web3 fastapi 'uvicorn[standard]' prometheus-client requests \
+       python-telegram-bot pyyaml
+
+# 1.3 OrbStack 起 Prometheus + Alertmanager + Grafana
+cd docker
+# 写好 docker-compose.yml, prometheus.yml, alert-rules.yml, alertmanager.yml（见 §8）
+docker compose up -d
+
+# 1.4 验证
+curl -s localhost:9090/-/healthy        # Prometheus OK
+curl -s localhost:9093/-/healthy        # Alertmanager OK
+open http://localhost:3000              # Grafana web UI
+</code></pre>
+
+<h3>Step 2 — Telegram bot（10 分钟）</h3>
+
+<pre><code># 2.1 在 Telegram 找 @BotFather，/newbot，记下 token
+# 2.2 你自己跟 bot 说一句话，访问
+#     https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates
+#     找到 chat.id
+# 2.3 存到 agent-vault
+agent-vault set lp/telegram/token
+agent-vault set lp/telegram/chat_id
+
+# 2.4 测试
+agent-vault get lp/telegram/token | xargs -I{} \
+  curl -s "https://api.telegram.org/bot{}/sendMessage" \
+       -d "chat_id=$(agent-vault get lp/telegram/chat_id)" \
+       -d "text=test from lp setup"
+</code></pre>
+
+<h3>Step 3 — wallet 配置 Base（5 分钟）</h3>
+
+<pre><code># 3.1 加 base 条目到 chains.json（jq 一行命令在 §8）
+# 3.2 加 base NFPM / SwapRouter / Aave Pool 到 policy.contract_allowlist
+# 3.3 加 base ETH/USDC pool 到 policy.lp_pool_allowlist
+# 3.4 暂时把 max_per_tx / max_per_day 设很紧（$200 / $600）
+
+# 3.5 验证
+uv run wallet --chain base chain show
+uv run wallet --chain base policy lint</code></pre>
+
+<h3>Step 4 — 写代码 + 本地 dry-run（3-4 小时）</h3>
+
+<pre><code># 4.1 实现 scraper.py（见 §9）
+# 4.2 实现 strategy.py（见 §9）
+# 4.3 实现 breaker.py（见 §9）
+# 4.4 本地跑 scraper.py 5 分钟，确认 metrics 出现在 Prometheus
+# 4.5 手动 POST 假 alert 到 strategy.py，看是否生成正确的 wallet 命令（dry-run 模式）
+
+# scraper 用 launchd 跑（macOS 推荐方式，比 cron 更可控）：
+# 写 ~/Library/LaunchAgents/com.kk.lp-scraper.plist
+launchctl load ~/Library/LaunchAgents/com.kk.lp-scraper.plist
+launchctl start com.kk.lp-scraper
+
+# strategy.py 用 launchd 常驻：
+# 写 ~/Library/LaunchAgents/com.kk.lp-strategy.plist (KeepAlive=true)
+launchctl load ~/Library/LaunchAgents/com.kk.lp-strategy.plist</code></pre>
+
+<h3>Step 5 — Sepolia E2E（1 周）</h3>
+
+<p>把 chains.json 切到 sepolia，跑 5 天完整 cycle。具体 checklist 见 <a href="#sepolia">§11</a>。</p>
+
+<h3>Step 6 — Bridge 资金 + Base 上线（1 天）</h3>
+
+<p>详见 <a href="#cutover">§12</a>。</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="configs">8. 配置文件</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h3>docker-compose.yml</h3>
+
+<pre><code>services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: changeme
+
+volumes:
+  prometheus-data:
+  grafana-data:
+</code></pre>
+
+<h3>prometheus.yml</h3>
+
+<pre><code>global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+
+rule_files:
+  - alert-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: 'lp-scraper'
+    static_configs:
+      # host.docker.internal = Mac 宿主机
+      - targets: ['host.docker.internal:9100']
+</code></pre>
+
+<h3>alert-rules.yml</h3>
+
+<pre><code>groups:
+  - name: lp
+    interval: 60s
+    rules:
+      # 早期提醒（2h），可选
+      - alert: LpOutOfRangeEarly
+        expr: wallet_lp_position_in_range == 0
+        for: 2h
+        labels:
+          severity: info
+        annotations:
+          summary: "Out of range 2h"
+          description: "Will re-mint at 12h unless price recovers"
+
+      # 主触发（12h）
+      - alert: LpOutOfRange12h
+        expr: wallet_lp_position_in_range == 0
+        for: 12h
+        labels:
+          severity: action
+        annotations:
+          summary: "Re-mint required"
+
+      # 高 vol pause
+      - alert: LpHighVolatility
+        expr: |
+          stddev_over_time(
+            (ln(wallet_lp_pool_price) - ln(wallet_lp_pool_price offset 1d))
+            [14d:5m]
+          ) > 0.10
+        for: 6h
+        labels:
+          severity: action_pause
+        annotations:
+          summary: "σ_14d > 10%, suspend LP"
+</code></pre>
+
+<h3>alertmanager.yml</h3>
+
+<pre><code>route:
+  receiver: strategy-webhook
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 24h     # 关键：防 Alertmanager 反复发同一个 alert
+
+receivers:
+  - name: strategy-webhook
+    webhook_configs:
+      - url: 'http://host.docker.internal:8080/alert'
+        send_resolved: true
+</code></pre>
+
+<h3>chains.json 加 base 条目（jq 一行）</h3>
+
+<pre><code>C="$HOME/Library/Application Support/wallet/chains.json"
+[ -f "$C" ] && cp -p "$C" "$C.bak.$(date +%s)"
+
+jq '. + {
+  "base": {
+    "name": "base",
+    "chain_id": 8453,
+    "rpc_url": "https://mainnet.base.org",
+    "broadcast_rpc_url": null,
+    "mev_exposure": false,
+    "explorer_api_url": "https://api.basescan.org/api",
+    "explorer_tx_url": "https://basescan.org/tx/{tx}",
+    "native_symbol": "ETH",
+    "builtin_tokens": {
+      "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "WETH": "0x4200000000000000000000000000000000000006"
+    },
+    "protocols": {
+      "uniswap_v3": {
+        "swap_router_v2":                "0x2626664c2603336E57B271c5C0b26F421741e481",
+        "quoter_v2":                     "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+        "factory":                       "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+        "nonfungible_position_manager":  "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"
+      },
+      "aave_v3": {
+        "pool":          "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
+        "data_provider": "0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac"
+      }
+    }
+  }
+}' "$C" > "$C.tmp" && mv "$C.tmp" "$C" && chmod 600 "$C"</code></pre>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="code">9. 代码骨架</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h3>scraper.py (~80 行)</h3>
+
+<pre><code>"""Pool + position 监控，每 5 分钟跑一次，输出 Prometheus metrics on :9100."""
+import os, time, math, json
+from web3 import Web3
+from prometheus_client import start_http_server, Gauge
+
+BASE_RPC = os.environ["BASE_RPC_URL"]
+POOL_ADDR = "0xd0b53D9277642d899DF5C87A3966A349A798F224"  # ETH/USDC 0.05% on Base
+POSITION_TOKEN_ID = int(os.environ.get("POSITION_TOKEN_ID", "0"))
+NFPM_ADDR = "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"
+
+# Metrics
+g_pool_price = Gauge("wallet_lp_pool_price", "ETH/USDC pool price")
+g_in_range = Gauge("wallet_lp_position_in_range", "1 if position in range else 0",
+                   ["token_id"])
+g_lower = Gauge("wallet_lp_position_lower_price", "Position lower bound price",
+                ["token_id"])
+g_upper = Gauge("wallet_lp_position_upper_price", "Position upper bound price",
+                ["token_id"])
+
+POOL_ABI = json.loads("""[
+  {"inputs":[],"name":"slot0","outputs":[
+    {"name":"sqrtPriceX96","type":"uint160"},
+    {"name":"tick","type":"int24"}, ...]}
+]""")
+
+NFPM_ABI = json.loads("""[{"inputs":[{"name":"tokenId","type":"uint256"}],
+  "name":"positions","outputs":[..., {"name":"tickLower","type":"int24"},
+                                     {"name":"tickUpper","type":"int24"}, ...]}]""")
+
+def tick_to_eth_price(tick: int) -> float:
+    """V3 tick → ETH/USDC human price."""
+    pv3 = 1.0001 ** tick
+    return 1e12 / pv3
+
+def scrape_once():
+    w3 = Web3(Web3.HTTPProvider(BASE_RPC, request_kwargs={"timeout": 10}))
+    pool = w3.eth.contract(address=POOL_ADDR, abi=POOL_ABI)
+    nfpm = w3.eth.contract(address=NFPM_ADDR, abi=NFPM_ABI)
+
+    slot0 = pool.functions.slot0().call()
+    current_tick = slot0[1]
+    current_price = tick_to_eth_price(current_tick)
+    g_pool_price.set(current_price)
+
+    if POSITION_TOKEN_ID:
+        pos = nfpm.functions.positions(POSITION_TOKEN_ID).call()
+        tl, tu = pos[5], pos[6]  # tickLower, tickUpper
+        # in-range if tickLower <= current_tick < tickUpper
+        in_range = 1 if (tl <= current_tick < tu) else 0
+        g_in_range.labels(token_id=POSITION_TOKEN_ID).set(in_range)
+        g_lower.labels(token_id=POSITION_TOKEN_ID).set(tick_to_eth_price(tu))  # tu = lower ETH price
+        g_upper.labels(token_id=POSITION_TOKEN_ID).set(tick_to_eth_price(tl))  # tl = upper ETH price
+
+if __name__ == "__main__":
+    start_http_server(9100)  # /metrics
+    while True:
+        try:
+            scrape_once()
+        except Exception as e:
+            print(f"scrape error: {e}")
+        time.sleep(300)
+</code></pre>
+
+<h3>strategy.py (~150 行)</h3>
+
+<pre><code>"""Webhook server。接 alertmanager，按规则算 tick，调 wallet。"""
+import os, json, subprocess, uuid, math, datetime as dt
+from fastapi import FastAPI, Request
+from pathlib import Path
+import telegram
+
+STATE_FILE = Path("~/work/lp/state.json").expanduser()
+MAX_REMINTS_PER_DAY = 2
+
+app = FastAPI()
+
+def load_state():
+    if not STATE_FILE.exists():
+        return {"date": str(dt.date.today()), "remints_today": 0}
+    s = json.loads(STATE_FILE.read_text())
+    if s["date"] != str(dt.date.today()):
+        s = {"date": str(dt.date.today()), "remints_today": 0}
+    return s
+
+def save_state(s):
+    STATE_FILE.write_text(json.dumps(s))
+
+def telegram_send(msg: str):
+    # 用 agent-vault 拿凭据
+    token = subprocess.check_output(["agent-vault", "get", "lp/telegram/token"]).decode().strip()
+    chat_id = subprocess.check_output(["agent-vault", "get", "lp/telegram/chat_id"]).decode().strip()
+    bot = telegram.Bot(token=token)
+    bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+
+def compute_new_ticks(current_eth_price: float, sigma_14d: float):
+    """按 σ 选 range 半宽。"""
+    if sigma_14d <= 0.04:
+        r = 0.05
+    elif sigma_14d <= 0.06:
+        r = 0.08
+    elif sigma_14d <= 0.08:
+        r = 0.12
+    else:
+        return None, None  # pause
+
+    p_lower = current_eth_price * (1 - r)
+    p_upper = current_eth_price * (1 + r)
+
+    # tick = ln(1e12 / price) / ln(1.0001)
+    tick_at = lambda p: int(math.log(1e12 / p) / math.log(1.0001))
+    # token0=USDC, token1=WETH on Base, tick_lower 对应 ETH 上沿
+    tick_lower = (tick_at(p_upper) // 10) * 10
+    tick_upper = ((tick_at(p_lower) // 10) + 1) * 10
+    return tick_lower, tick_upper
+
+@app.post("/alert")
+async def receive_alert(req: Request):
+    body = await req.json()
+    for alert in body.get("alerts", []):
+        if alert["status"] != "firing":
+            continue
+        name = alert["labels"]["alertname"]
+
+        if name == "LpOutOfRange12h":
+            await handle_remint()
+        elif name == "LpHighVolatility":
+            await handle_pause()
+        elif name == "LpOutOfRangeEarly":
+            telegram_send("⏰ Out of range 2h. Will re-mint at 12h if persists.")
+    return {"ok": True}
+
+async def handle_remint():
+    # 1. Rate limit
+    state = load_state()
+    if state["remints_today"] >= MAX_REMINTS_PER_DAY:
+        telegram_send(f"🚫 Re-mint blocked: {state['remints_today']}/{MAX_REMINTS_PER_DAY} today")
+        return
+
+    # 2. 查当前 pool 价 + 14d σ（从 Prometheus 查）
+    eth_price = query_prometheus("wallet_lp_pool_price")
+    sigma_14d = query_prometheus("stddev_over_time(...)")  # 见 alert rule 表达式
+
+    # 3. 算新 tick
+    tl, tu = compute_new_ticks(eth_price, sigma_14d)
+    if tl is None:
+        await handle_pause()
+        return
+
+    # 4. 计算 amount 平衡（具体公式略，按 V3 比例）
+    amount_eth, amount_usdc = compute_balanced_amounts(eth_price, tl, tu)
+
+    # 5. 调 wallet —— 先 remove 旧 position，再 mint 新的
+    token_id = int(os.environ["POSITION_TOKEN_ID"])
+    request_id = f"lp-cycle-{uuid.uuid4().hex[:8]}"
+
+    r1 = subprocess.run(["wallet", "lp", "remove", str(token_id), "--percent", "100",
+                         "--chain", "base", "--broadcast", "--yes",
+                         "--request-id", f"{request_id}-remove"],
+                        capture_output=True)
+    if r1.returncode != 0:
+        telegram_send(f"⚠ remove failed: {r1.stderr.decode()[:200]}")
+        return
+
+    r2 = subprocess.run(["wallet", "lp", "mint", "ETH", "USDC", "--fee", "500",
+                         "--tick-lower", str(tl), "--tick-upper", str(tu),
+                         "--amount-a", str(amount_eth), "--amount-b", str(amount_usdc),
+                         "--slippage-bps", "50",
+                         "--chain", "base", "--broadcast", "--yes",
+                         "--request-id", f"{request_id}-mint"],
+                        capture_output=True)
+    if r2.returncode != 0:
+        telegram_send(f"⚠ mint failed: {r2.stderr.decode()[:200]}")
+        return
+
+    # 6. 更新 state + 通知
+    state["remints_today"] += 1
+    save_state(state)
+
+    new_token_id = parse_new_token_id(r2.stdout)
+    os.environ["POSITION_TOKEN_ID"] = str(new_token_id)  # 通知 scraper（实际要写入配置）
+
+    telegram_send(
+        f"✓ Re-mint #{state['remints_today']} success\n"
+        f"new range: [${eth_price * (1 - r):.0f}, ${eth_price * (1 + r):.0f}]\n"
+        f"tokenId: {new_token_id}"
+    )
+
+async def handle_pause():
+    # 调 wallet lp remove → wallet aave supply
+    # 实现略
+    telegram_send("⏸ Paused LP, moved to Aave USDC")
+</code></pre>
+
+<h3>breaker.py（rate limit + cooldown，可选独立模块）</h3>
+
+<p>本最小方案里 rate limit 直接写在 strategy.py 用 state.json，breaker.py 模块可省略。如果以后想加更复杂逻辑（连续失败 cooldown 等）再独立出来。</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="telegram">10. Telegram bot 设置（详细）</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<ol>
+  <li>在 Telegram 找 <code>@BotFather</code></li>
+  <li>发 <code>/newbot</code>，按提示给 bot 起名（例如 <code>kk_lp_alerts_bot</code>）</li>
+  <li>记下 token，形如 <code>7234567890:ABCdef...</code></li>
+  <li>跟你的新 bot 说一句话（任何消息）激活它</li>
+  <li>在浏览器打开 <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code></li>
+  <li>JSON 里找 <code>"chat":{"id":12345678}</code>，这是你的 chat_id</li>
+  <li>token + chat_id 存进 agent-vault：
+    <pre><code>agent-vault set lp/telegram/token
+agent-vault set lp/telegram/chat_id</code></pre>
+  </li>
+  <li>测试：
+    <pre><code>TOKEN=$(agent-vault get lp/telegram/token)
+CHAT=$(agent-vault get lp/telegram/chat_id)
+curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+     -d "chat_id=${CHAT}" -d "text=test from kk lp setup"</code></pre>
+  </li>
+</ol>
+
+<div class="callout amber">
+绝不要把 token 写进代码 / git / 任何 plaintext 文件。<code>agent-vault</code> + 运行时 <code>subprocess.check_output</code> 取，是 LP 系统最低安全标准。
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="sepolia">11. Sepolia 演练 checklist（1 周）</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<p>在 Sepolia 上模拟整个 cycle。资金：少量 Sepolia ETH + USDC（从 faucet）。</p>
+
+<h4>Day 1–2 — 单点验证</h4>
+<ul>
+  <li>☐ scraper.py 跑起来，<code>curl localhost:9100/metrics</code> 看 metrics 正常</li>
+  <li>☐ Prometheus 能拉到 metrics（在 :9090 web UI 查）</li>
+  <li>☐ 手动 POST 测试 alert 到 strategy.py：<br>
+    <code>curl -X POST localhost:8080/alert -d '{"alerts":[{...}]}'</code></li>
+  <li>☐ Telegram 收到测试消息</li>
+  <li>☐ wallet 在 sepolia 能成功 mint 一个小仓位（手动跑 wallet lp mint）</li>
+</ul>
+
+<h4>Day 3–4 — 整合</h4>
+<ul>
+  <li>☐ strategy.py 收到 alert → 算 tick → 调 wallet → 成功广播 → Telegram 通知</li>
+  <li>☐ 人为制造 out-of-range：把 position tick range 设得很窄，让 sepolia ETH 价立刻跨过</li>
+  <li>☐ 看 12h 后 alert 是否准点触发</li>
+  <li>☐ 验证 rate limit：人为触发 3 次 re-mint，第 3 次应被拦下</li>
+</ul>
+
+<h4>Day 5–7 — 无人值守</h4>
+<ul>
+  <li>☐ 关掉所有手动干预，让系统自己跑 3 天</li>
+  <li>☐ 故意 kill scraper / strategy，看 launchd 是否自动重启</li>
+  <li>☐ 故意把 wallet 的 policy 设得超紧，看 wallet 拒收时 strategy.py 的失败路径是否正确（Telegram 报错，不死循环）</li>
+  <li>☐ 故意拔网线 5 分钟，看 scraper / strategy 怎么应对（应该 retry，不应 crash）</li>
+  <li>☐ 检查 wallet audit log，所有 broadcast 都有正确 request_id 和 outcome</li>
+</ul>
+
+<div class="callout green">
+所有 ☐ 打勾 = 可以切 Base。任一项有问题，先修，别上 mainnet。
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="cutover">12. Base 上线 + caps 收紧节奏</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<h3>Day 0（上线日）</h3>
+<ol>
+  <li>Bridge 资金到 Base：
+    <ul>
+      <li>ETH 走 canonical Base bridge 或 Coinbase 提现</li>
+      <li>USDC 用 Circle CCTP（原生 USDC，不是 USDC.e）</li>
+    </ul>
+  </li>
+  <li>更新 chains.json + policy.json（base allowlist + 极紧 caps）：
+    <pre><code>policy.max_per_tx  = { ETH: 0.1, USDC: 200 }
+policy.max_per_day = { ETH: 0.3, USDC: 600 }</code></pre>
+  </li>
+  <li>手动跑首次 mint（人工 dry-run + broadcast，不走自动化）：
+    <pre><code>uv run wallet lp mint ETH USDC --fee 500 \
+    --tick-lower &lt;...&gt; --tick-upper &lt;...&gt; \
+    --amount-a 1.865 --amount-b 4507 \
+    --chain base --broadcast --yes \
+    --request-id "base-initial-mint-$(uuidgen)"</code></pre>
+  </li>
+  <li>记下 tokenId，写入 strategy.py 配置 / 环境变量</li>
+  <li>启动 launchd 跑 scraper + strategy</li>
+</ol>
+
+<h3>Day 1–5（紧 caps 观察期）</h3>
+<ul>
+  <li>每天 5 分钟看 Grafana：pool 价 / position in-range / 累计 fee</li>
+  <li>每天检查 wallet audit.log 看 broadcast 是否正常</li>
+  <li>Telegram 收到的通知逐条 review，确认对得上链上</li>
+  <li>如有任何异常 → 停 launchd 排查</li>
+</ul>
+
+<h3>Day 6–14（caps 中等）</h3>
+<pre><code>policy.max_per_tx  = { ETH: 0.2, USDC: 400 }
+policy.max_per_day = { ETH: 0.6, USDC: 1200 }</code></pre>
+
+<h3>Day 15+（production）</h3>
+<pre><code>policy.max_per_tx  = { ETH: 0.3, USDC: 600 }
+policy.max_per_day = { ETH: 1.0, USDC: 2000 }</code></pre>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2 id="runbook">13. 运维 runbook — 常见情况</h2>
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<table>
+  <thead>
+    <tr><th>症状</th><th>诊断</th><th>处理</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Telegram 半天没消息</td>
+      <td>scraper 挂了 / 没数据 / heartbeat 没发</td>
+      <td>SSH 进 Mac mini，<code>launchctl list | grep lp</code> 看进程；查 <code>~/work/lp/logs/scraper.log</code></td>
+    </tr>
+    <tr>
+      <td>Telegram: "Re-mint failed: policy_block"</td>
+      <td>caps 设得太紧 / allowlist 缺地址</td>
+      <td><code>wallet policy show</code> 比对；调 policy.json；手动重跑</td>
+    </tr>
+    <tr>
+      <td>Telegram: "Re-mint failed: insufficient funds"</td>
+      <td>position 钱被消耗光 / 没 gas</td>
+      <td>查 base 链上余额；补 ETH 作 gas</td>
+    </tr>
+    <tr>
+      <td>Telegram: "Re-mint blocked: 2/2 today"</td>
+      <td>当天已经 2 次 re-mint，达到限额</td>
+      <td>正常 — 等次日。也可以手动 <code>echo '{"date":...,"remints_today":0}' &gt; state.json</code> 重置</td>
+    </tr>
+    <tr>
+      <td>Grafana 显示 pool 价飞了（$10000+）</td>
+      <td>scraper decimal shift bug</td>
+      <td>立刻停 launchd scraper + strategy；查代码 tick_to_eth_price</td>
+    </tr>
+    <tr>
+      <td>Telegram: "Paused, σ=11.x%"</td>
+      <td>市场恐慌期，已自动转 Aave</td>
+      <td>正常。等 σ 回到 &lt; 6% 自动恢复（看 <code>LpVolatilityNormalized</code> alert）</td>
+    </tr>
+    <tr>
+      <td>连续 3 次 same direction 触发</td>
+      <td>趋势市，策略失效</td>
+      <td>Telegram 会提示；考虑手动停 LP，整仓换 Aave 或 HOLD 等趋势结束</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<p class="footer-note">
+生成于 wallet 1.07 (2026-05-21)。<br>
+配套文档：<a href="../v3-lp-range-strategy-base.html" style="color:#6d9dc5;">策略数学推导</a> · <a href="README.md" style="color:#6d9dc5;">README</a><br>
+代码骨架是非完整实现，部署前需自行补全 ABI / amount 平衡公式 / Prometheus 查询调用。
+</p>
+
+</body>
+</html>
