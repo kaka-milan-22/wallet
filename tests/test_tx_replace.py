@@ -26,6 +26,7 @@ SEPOLIA = ChainConfig(
     name="sepolia",
     chain_id=11155111,
     rpc_url="http://invalid",
+    mev_exposure=False,  # sepolia is a testnet — matches the real builtin preset
     explorer_api_url="http://invalid",
     explorer_tx_url="http://invalid/{tx}",
     native_symbol="ETH",

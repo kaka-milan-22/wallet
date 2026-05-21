@@ -18,10 +18,54 @@ captured in `git log` — `1.01` is the first formal release tag.
 Next planned tracks:
 - **Ledger / hardware-wallet integration** — the documented mainnet > $1.5k
   gating item; see `docs/why_hard_wallet.md`.
-- **MEV-protected broadcast** + **`wallet policy verify`** — planned, see
-  `docs/plan-mev-protection-and-policy-verify.md`.
+- **`wallet policy verify`** — Etherscan round-trip of allowlist entries
+  remains planned. The MEV-protected-broadcast half of the original plan
+  shipped in `1.07` below.
 - **Strategy daemon** — separate repo, consumes the now-stable primitive
   surface; out of scope per `.claude/skills/wallet-scope-litmus/SKILL.md`.
+
+---
+
+## [1.07] — Read / broadcast RPC split + capability-driven MEV gate
+
+EVM-capability read/broadcast split. `ChainConfig` gains `broadcast_rpc_url:
+str | None` (route `eth_sendRawTransaction` through a private relay —
+Flashbots Protect, MEV Blocker, operator-run builder — while reads stay on a
+normal RPC) and `mev_exposure: bool = True` (declare whether the chain has
+a public mempool exposed to MEV searchers; defaults to fail-closed). New
+`web3_broadcast(chain)` factory in `core/rpc.py` reuses `make_web3` with
+`validate_chain_id=False`, so middleware / retry / metrics added later stay
+single-sourced.
+
+`policy.evaluate(..., chain=chain, ...)` adds a capability-driven gate that
+runs before any category dispatch: on `mev_exposure: true` chains, broadcast
+is blocked unless `broadcast_rpc_url` is set AND distinct from `rpc_url`.
+Reasons: `mev-exposed-broadcast-rpc-url-unset` /
+`mev-exposed-broadcast-equals-read`. The check is per-chain capability, not
+a policy flag — operator never has to `--policy-bypass` for testnets /
+L2s / anvil / CI, so the bypass habit that would destroy the gate never
+forms. Builtin sepolia preset declares `mev_exposure: false` to preserve
+current testnet behavior.
+
+`cli/_common.py:confirm_and_broadcast` routes the actual
+`eth_sendRawTransaction` through `web3_broadcast(chain)`; reads (nonce
+refresh, simulate, gas, receipts) keep using the read Web3. Success
+envelopes include `data.broadcast_path: "private_relay" | "public_rpc"`
+so agents and humans can tell relay submissions (1–3 block inclusion delay,
+not visible on Etherscan until included) from public-mempool submissions
+at a glance. Rich output adds a hint about the inclusion delay for the
+private-relay path.
+
+Phase 2 deferrals (intentional, see plan): hostname allowlist /
+capability probe / local nonce manager / multi-relay fanout / Etherscan
+`policy verify` / MEV scoring.
+
+Files: `src/wallet/core/config.py`, `src/wallet/core/rpc.py`,
+`src/wallet/core/policy.py`, `src/wallet/cli/_common.py`,
+`tests/test_chain.py`, `tests/test_rpc.py`, `tests/test_policy.py`,
+`tests/test_broadcast_path.py` (new), `tests/test_tx_replace.py`
+(SEPOLIA fixture aligned with builtin's `mev_exposure: false`),
+`README.md`, `ROADMAP.md`.
 
 ---
 

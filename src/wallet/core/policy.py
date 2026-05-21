@@ -18,7 +18,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from wallet.core.config import atomic_write_text, data_root
+from wallet.core.config import ChainConfig, atomic_write_text, data_root
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from wallet.core.tokens import MAX_UINT256
@@ -295,9 +295,16 @@ def evaluate(
     state: WalletState,
     caller: str,
     *,
+    chain: ChainConfig | None = None,
     bypass: bool = False,
 ) -> Decision:
-    """Run the policy decision tree. See module docstring for severity semantics."""
+    """Run the policy decision tree. See module docstring for severity semantics.
+
+    `chain` enables the capability-driven broadcast safety gate (see below).
+    Callers that don't pass it (legacy paths, unit tests, dry-runs without a
+    chain context) skip the gate — the existing behavior is preserved
+    bit-for-bit when `chain is None`.
+    """
     policy = load_policy()
 
     # --- bypass handling ---
@@ -321,6 +328,34 @@ def evaluate(
             reason="no-policy-configured-run-wallet-policy-init",
             severity="block",
         )
+
+    # --- 0.5. EVM broadcast safety (capability-driven, mev_exposure==True) ---
+    # Wallet-config sanity, not target-identity. Fires on any chain whose
+    # capability says "public mempool exposes pending tx to MEV searchers"
+    # (Ethereum L1 / BSC / Polygon / Avalanche). Sequencer-controlled L2s
+    # and testnets opt out via `mev_exposure: false` in chains.json.
+    #
+    # Two failure modes, both pre-broadcast:
+    #   1. broadcast_rpc_url unset → wallet would default-fallback to the
+    #      public read RPC, dumping the tx into the public mempool. Block.
+    #   2. broadcast_rpc_url == rpc_url → operator collapsed the split,
+    #      same outcome as (1). Block — refuse the silently-broken config.
+    #
+    # Placed before category dispatch because misconfiguration is
+    # category-independent.
+    if chain is not None and chain.mev_exposure:
+        if not chain.broadcast_rpc_url:
+            return Decision(
+                allowed=False,
+                reason="mev-exposed-broadcast-rpc-url-unset",
+                severity="block",
+            )
+        if chain.broadcast_rpc_url == chain.rpc_url:
+            return Decision(
+                allowed=False,
+                reason="mev-exposed-broadcast-equals-read",
+                severity="block",
+            )
 
     desc = prepared.description
     category = _category(prepared)

@@ -701,3 +701,118 @@ def test_save_load_roundtrip(isolated_files):
     from wallet.core.policy import load_policy
     loaded = load_policy()
     assert loaded == p
+
+
+# --- EVM broadcast-safety gate (mev_exposure capability) --------------------
+
+
+def _chain(*, chain_id=1, rpc_url="https://eth.llamarpc.com",
+           broadcast_rpc_url=None, mev_exposure=True, name="ethereum"):
+    from wallet.core.config import ChainConfig
+    return ChainConfig(
+        name=name,
+        chain_id=chain_id,
+        rpc_url=rpc_url,
+        broadcast_rpc_url=broadcast_rpc_url,
+        mev_exposure=mev_exposure,
+        explorer_api_url="https://api.example/v2/api",
+        explorer_tx_url="https://example/tx/{tx}",
+        native_symbol="ETH",
+    )
+
+
+def test_evaluate_without_chain_kwarg_skips_capability_gate(isolated_files):
+    """Legacy callers (no chain kwarg) skip the gate. Behavior preserved."""
+    save_policy(Policy(recipient_allowlist=["0x" + "11" * 20], max_per_tx={"ETH": "1"}))
+    pt = FakePrepared(
+        kind="native transfer", to="0x" + "11" * 20,
+        amount_wei=10**15, amount_unit="ETH", amount_decimals=18,
+    )
+    d = evaluate(pt, _state_with(), "tty")
+    assert d.allowed
+
+
+def test_evaluate_mev_exposure_false_skips_capability_gate(isolated_files):
+    """Sequencer-controlled / testnet chains opt out via mev_exposure=False."""
+    save_policy(Policy(recipient_allowlist=["0x" + "11" * 20], max_per_tx={"ETH": "1"}))
+    chain = _chain(
+        chain_id=11155111, name="sepolia",
+        rpc_url="https://ethereum-sepolia.publicnode.com",
+        broadcast_rpc_url=None, mev_exposure=False,
+    )
+    pt = FakePrepared(
+        kind="native transfer", to="0x" + "11" * 20,
+        amount_wei=10**15, amount_unit="ETH", amount_decimals=18,
+    )
+    d = evaluate(pt, _state_with(), "tty", chain=chain)
+    assert d.allowed
+
+
+def test_evaluate_mev_exposure_true_broadcast_url_unset_blocks(isolated_files):
+    """Mainnet-class chain without broadcast_rpc_url → block before any
+    other gate. Reason names the misconfiguration."""
+    save_policy(Policy(recipient_allowlist=["0x" + "11" * 20], max_per_tx={"ETH": "1"}))
+    chain = _chain(broadcast_rpc_url=None, mev_exposure=True)
+    pt = FakePrepared(
+        kind="native transfer", to="0x" + "11" * 20,
+        amount_wei=10**15, amount_unit="ETH", amount_decimals=18,
+    )
+    d = evaluate(pt, _state_with(), "tty", chain=chain)
+    assert not d.allowed
+    assert d.reason == "mev-exposed-broadcast-rpc-url-unset"
+    assert d.severity == "block"
+
+
+def test_evaluate_mev_exposure_true_broadcast_equals_read_blocks(isolated_files):
+    """broadcast_rpc_url == rpc_url collapses the read/broadcast split → block."""
+    save_policy(Policy(recipient_allowlist=["0x" + "11" * 20], max_per_tx={"ETH": "1"}))
+    chain = _chain(
+        rpc_url="https://eth.llamarpc.com",
+        broadcast_rpc_url="https://eth.llamarpc.com",
+        mev_exposure=True,
+    )
+    pt = FakePrepared(
+        kind="native transfer", to="0x" + "11" * 20,
+        amount_wei=10**15, amount_unit="ETH", amount_decimals=18,
+    )
+    d = evaluate(pt, _state_with(), "tty", chain=chain)
+    assert not d.allowed
+    assert d.reason == "mev-exposed-broadcast-equals-read"
+    assert d.severity == "block"
+
+
+def test_evaluate_mev_exposure_true_distinct_broadcast_url_passes_gate(isolated_files):
+    """When the split is honored, the capability gate passes — subsequent
+    gates (recipient allowlist, caps, etc.) take over."""
+    save_policy(Policy(recipient_allowlist=["0x" + "11" * 20], max_per_tx={"ETH": "1"}))
+    chain = _chain(
+        rpc_url="https://eth.llamarpc.com",
+        broadcast_rpc_url="https://rpc.flashbots.net",
+        mev_exposure=True,
+    )
+    pt = FakePrepared(
+        kind="native transfer", to="0x" + "11" * 20,
+        amount_wei=10**15, amount_unit="ETH", amount_decimals=18,
+    )
+    d = evaluate(pt, _state_with(), "tty", chain=chain)
+    assert d.allowed
+
+
+def test_capability_gate_fires_before_sentinel(isolated_files):
+    """A sentinel-listed recipient on a misconfigured chain reports the
+    misconfiguration, not the sentinel — because the broadcast would have
+    leaked to the mempool either way."""
+    addr = "0x" + "ee" * 20
+    save_policy(Policy(
+        recipient_allowlist=[addr],
+        sentinel_blocklist=[addr],
+        max_per_tx={"ETH": "1"},
+    ))
+    chain = _chain(broadcast_rpc_url=None, mev_exposure=True)
+    pt = FakePrepared(
+        kind="native transfer", to=addr,
+        amount_wei=10**15, amount_unit="ETH", amount_decimals=18,
+    )
+    d = evaluate(pt, _state_with(), "tty", chain=chain)
+    assert not d.allowed
+    assert d.reason == "mev-exposed-broadcast-rpc-url-unset"

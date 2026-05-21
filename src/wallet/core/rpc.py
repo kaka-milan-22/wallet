@@ -19,6 +19,7 @@ __all__ = [
     "parse_units",
     "redact_url",
     "scrub_message_of_url",
+    "web3_broadcast",
 ]
 
 
@@ -176,15 +177,35 @@ class RpcConnectError(RuntimeError):
     the user gets a clean message instead of a Python traceback."""
 
 
-def make_web3(chain: ChainConfig, timeout: int = 20) -> Web3:
+def make_web3(
+    chain: ChainConfig,
+    timeout: int = 20,
+    *,
+    url: str | None = None,
+    validate_chain_id: bool = True,
+) -> Web3:
     """Build a Web3 client for the given chain config.
 
-    Verifies that the configured RPC actually serves the expected chainId.
-    Wraps any HTTP / network / JSON-RPC error during the handshake in
-    `RpcConnectError` so callers don't need to know about requests/web3
-    internals.
+    Verifies that the configured RPC actually serves the expected chainId
+    (unless `validate_chain_id=False`). Wraps any HTTP / network / JSON-RPC
+    error during the handshake in `RpcConnectError` so callers don't need
+    to know about requests/web3 internals.
+
+    `url` overrides `chain.rpc_url` — used by `web3_broadcast` to point at a
+    private relay endpoint while sharing all other construction logic
+    (HTTPProvider kwargs, future middleware, retry, metrics). Single source
+    of truth for Web3 instantiation: anything added here covers both read
+    and broadcast paths.
+
+    `validate_chain_id=False` skips the chainId handshake. Required for
+    private-relay endpoints (Flashbots Protect, MEV Blocker, etc) which
+    typically only expose `eth_sendRawTransaction` and will reject
+    `eth_chainId`.
     """
-    w3 = Web3(HTTPProvider(chain.rpc_url, request_kwargs={"timeout": timeout}))
+    effective_url = url or chain.rpc_url
+    w3 = Web3(HTTPProvider(effective_url, request_kwargs={"timeout": timeout}))
+    if not validate_chain_id:
+        return w3
     try:
         # chainId is the canonical idempotent read — perfect candidate for
         # retry. Flaky free-tier RPCs intermittently 502 on the very first
@@ -195,20 +216,20 @@ def make_web3(chain: ChainConfig, timeout: int = 20) -> Web3:
         status = e.response.status_code if e.response is not None else "?"
         body = str(e.response.text)[:200] if e.response is not None else str(e)
         raise RpcConnectError(
-            f"RPC {redact_url(chain.rpc_url)} returned HTTP {status}: "
-            f"{scrub_message_of_url(body, chain.rpc_url)}"
+            f"RPC {redact_url(effective_url)} returned HTTP {status}: "
+            f"{scrub_message_of_url(body, effective_url)}"
         ) from e
     except (RequestsConnectionError, Timeout) as e:
         # urllib3's exception message contains `url: /v2/<KEY>` even when
         # we never include the URL ourselves — must scrub `str(e)` too.
         raise RpcConnectError(
-            f"failed to reach RPC {redact_url(chain.rpc_url)}: "
-            f"{type(e).__name__}: {scrub_message_of_url(str(e), chain.rpc_url)}"
+            f"failed to reach RPC {redact_url(effective_url)}: "
+            f"{type(e).__name__}: {scrub_message_of_url(str(e), effective_url)}"
         ) from e
     except Web3RPCError as e:
         raise RpcConnectError(
-            f"RPC {redact_url(chain.rpc_url)} rejected chainId query: "
-            f"{scrub_message_of_url(str(e), chain.rpc_url)}"
+            f"RPC {redact_url(effective_url)} rejected chainId query: "
+            f"{scrub_message_of_url(str(e), effective_url)}"
         ) from e
 
     if actual != chain.chain_id:
@@ -217,6 +238,22 @@ def make_web3(chain: ChainConfig, timeout: int = 20) -> Web3:
             f"endpoint reports {actual}. Likely wrong rpc_url for this chain."
         )
     return w3
+
+
+def web3_broadcast(chain: ChainConfig, timeout: int = 20) -> Web3:
+    """Web3 client for `eth_sendRawTransaction` only.
+
+    Routes through `chain.broadcast_rpc_url` if set, else falls back to
+    `chain.rpc_url`. Skips chainId validation — private relays typically
+    only expose sendRawTransaction and don't answer eth_chainId. The
+    signed tx itself carries `chainId`, so the relay rejects mismatched
+    chains structurally; no client-side probe needed.
+
+    Callers must only use this instance for broadcast. Reads through a
+    private relay will fail.
+    """
+    url = chain.broadcast_rpc_url or chain.rpc_url
+    return make_web3(chain, timeout=timeout, url=url, validate_chain_id=False)
 
 
 def format_units(amount: int, decimals: int) -> str:

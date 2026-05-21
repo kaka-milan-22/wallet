@@ -330,7 +330,9 @@ Base / Arbitrum / any EVM chain), write a JSON entry to
   "ethereum": {
     "name": "ethereum",
     "chain_id": 1,
-    "rpc_url": "https://eth.drpc.org",        // or your Alchemy/Infura/Cloudflare URL
+    "rpc_url": "https://eth.drpc.org",                  // read path: balance, nonce, simulate, gas, receipts
+    "broadcast_rpc_url": "https://rpc.flashbots.net",   // write path: eth_sendRawTransaction only
+    "mev_exposure": true,                                // declare: this chain has a public mempool
     "explorer_api_url": "https://api.etherscan.io/v2/api",
     "explorer_tx_url": "https://etherscan.io/tx/{tx}",
     "native_symbol": "ETH",
@@ -360,12 +362,44 @@ Base / Arbitrum / any EVM chain), write a JSON entry to
 marked `user-added`, and an entry whose name matches a builtin is marked
 `user-override` (your fields win).
 
-**Public RPC choice** — for "use without registering with anyone":
-`https://eth.drpc.org`, `https://ethereum.publicnode.com`,
+### Read / broadcast RPC split + MEV protection
+
+Mainnet (and any EVM chain with a public mempool) routes
+`eth_sendRawTransaction` through a **separate** endpoint than reads, so the
+signed tx never enters the public mempool where sandwich bots can frontrun
+it. Two related fields on each chain config:
+
+- **`broadcast_rpc_url`** — URL used only for `eth_sendRawTransaction`.
+  When `None`, broadcast falls back to `rpc_url`. Recommended:
+  [`https://rpc.flashbots.net`](https://docs.flashbots.net/flashbots-protect/overview)
+  (Flashbots Protect — neutral builder, free) or
+  [`https://rpc.mevblocker.io`](https://mevblocker.io/) (MEV Blocker — refund
+  model). These endpoints only accept `sendRawTransaction`; reads will fail,
+  which is why we use a separate URL for them.
+- **`mev_exposure`** — boolean capability declaration: "this chain exposes
+  pending tx to a public mempool visible to MEV searchers." Defaults to
+  `true` (fail-closed). Set `false` for sequencer-controlled chains
+  (Arbitrum / Optimism / Base / most L2s) and testnets where there is no
+  public mempool MEV threat.
+
+When `mev_exposure: true`, the policy gate **refuses to broadcast** unless
+`broadcast_rpc_url` is set AND distinct from `rpc_url`. This is the
+fail-closed enforcement: an env-var typo, a forgotten export, or a
+copy-paste mistake that collapses the split all get caught before signing.
+Reasons: `mev-exposed-broadcast-rpc-url-unset` /
+`mev-exposed-broadcast-equals-read`.
+
+JSON broadcast envelopes include `data.broadcast_path: "private_relay" |
+"public_rpc"` so agents and humans can tell at a glance whether a tx will
+sit in a private relay queue (1–3 block inclusion delay typical, not
+visible on Etherscan until included) or hit the public mempool.
+
+Built-in `sepolia` ships with `mev_exposure: false` because testnets have
+no MEV threat — the gate stays quiet, current behavior preserved.
+
+**Public RPC choice for the read path** — for "use without registering
+with anyone": `https://eth.drpc.org`, `https://ethereum.publicnode.com`,
 `https://eth.api.onfinality.io/public` are all reliable as of testing.
-Use `https://rpc.flashbots.net` for **broadcasting** mainnet swaps if MEV
-protection matters (note: it doesn't whitelist `eth_call` so reads need
-a separate RPC — single `rpc_url` schema today means you pick one role).
 `cloudflare-eth.com` is **deprecated** as a Web3 Gateway — most methods
 return `-32603` errors.
 

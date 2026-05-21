@@ -17,11 +17,31 @@ from wallet.cli._output import (
     stdout_console,
 )
 from wallet.core.config import ChainConfig
-from wallet.core.rpc import RpcConnectError, format_units
+from wallet.core.rpc import RpcConnectError, format_units, web3_broadcast
 from wallet.core.rpc import make_web3 as _make_web3_raw
 from wallet.core.signer import sign_transaction
 from wallet.core.tx import PreparedTx, broadcast
 from wallet.storage.state import WalletState
+
+
+def _broadcast_path(chain: ChainConfig) -> str:
+    """Classify how this broadcast is routed for UX disclosure.
+
+    "private_relay" — `broadcast_rpc_url` is set and distinct from rpc_url;
+                      tx will NOT enter the public mempool (Flashbots
+                      Protect / MEV Blocker / operator-run relay).
+    "public_rpc"   — broadcast falls back to rpc_url; tx is visible to
+                      anyone watching that RPC's mempool.
+
+    The capability gate in `policy.evaluate` already enforces that
+    mev_exposure==True chains must route through a private relay before
+    we ever get here, so on those chains this always returns
+    "private_relay". On mev_exposure==False chains (testnets, L2s) it
+    reflects whatever the operator configured.
+    """
+    if chain.broadcast_rpc_url and chain.broadcast_rpc_url != chain.rpc_url:
+        return "private_relay"
+    return "public_rpc"
 
 
 def make_web3_or_exit(chain: ChainConfig, *, command: str):
@@ -522,7 +542,7 @@ def confirm_and_broadcast(
     explain(f"caller={caller} request_id={request_id} policy_bypass={policy_bypass}")
 
     # --- policy gate ---
-    decision = policy_mod.evaluate(prepared, state, caller, bypass=policy_bypass)
+    decision = policy_mod.evaluate(prepared, state, caller, chain=chain, bypass=policy_bypass)
     explain(f"policy.evaluate → allowed={decision.allowed} severity={decision.severity} reason={decision.reason}")
 
     if not decision.allowed:
@@ -662,9 +682,18 @@ def confirm_and_broadcast(
             raise typer.Exit(code=1) from None
         explain(f"nonce refreshed at sign-time → {prepared.tx['nonce']}")
 
+    # Broadcast goes through `web3_broadcast(chain)` — a SEPARATE Web3
+    # instance pointed at `chain.broadcast_rpc_url` when set. This routes
+    # `eth_sendRawTransaction` through a private relay (Flashbots Protect,
+    # MEV Blocker, …) so the tx never hits the public mempool. Reads
+    # (nonce, simulate, fees, receipt poll) stay on `w3` because private
+    # relays only expose sendRawTransaction. The policy gate above already
+    # refused to reach this point unless the read/broadcast split is
+    # honored on mev_exposure==True chains.
+    w3_broadcast = web3_broadcast(chain)
     try:
         raw = sign_transaction(sender_account, prepared.tx)
-        tx_hash = broadcast(w3, raw)
+        tx_hash = broadcast(w3_broadcast, raw)
     except Exception as e:
         # Stuck-tx recovery (preserve_nonce=True) has a known benign failure:
         # the original tx mined while we were preparing the cancel/replace,
@@ -730,11 +759,13 @@ def confirm_and_broadcast(
 
     _audit_event(prepared, chain, decision, caller, tx_hash=tx_hash, outcome="broadcast", request_id=request_id)
 
+    broadcast_path = _broadcast_path(chain)
     success_data = _build_data(prepared, chain, phase="broadcast", state=state, extra={
         "tx_hash": tx_hash,
         "explorer_url": chain.explorer_tx_url.replace("{tx}", tx_hash),
         "request_id": request_id,
         "outcome": "broadcast",
+        "broadcast_path": broadcast_path,
     })
     envelope = {"ok": True, "command": cmd, "chain": chain.name, "data": success_data}
 
@@ -745,5 +776,15 @@ def confirm_and_broadcast(
             chain.explorer_tx_url.replace("{tx}", tx_hash),
             soft_wrap=True, style="dim", highlight=False,
         )
+        # Disclose the broadcast path. Private-relay submissions don't
+        # appear on the explorer until inclusion (1–3 blocks typical on
+        # Ethereum mainnet); without this hint operators retry and burn
+        # nonces. Public-rpc path is silent — same as legacy behavior.
+        if broadcast_path == "private_relay":
+            info(
+                "[dim]submitted via private relay — not visible in public "
+                "mempool. Block inclusion typically takes 1–3 blocks. "
+                "Monitor: `wallet tx pending`.[/dim]"
+            )
 
     emit(envelope, render_success)

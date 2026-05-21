@@ -12,6 +12,18 @@ class ChainConfig(BaseModel):
     name: str
     chain_id: int
     rpc_url: str
+    broadcast_rpc_url: str | None = None
+    """Override URL for eth_sendRawTransaction only. When None, broadcast
+    falls back to rpc_url. Used to route mainnet broadcasts through private
+    relays (Flashbots Protect, MEV Blocker) while reads stay on a normal
+    RPC. Private relays typically only expose sendRawTransaction — reads
+    through this URL will fail."""
+    mev_exposure: bool = True
+    """Whether this EVM chain exposes pending tx to a public mempool visible
+    to MEV searchers. True (the conservative default) requires `broadcast_rpc_url`
+    to be set, distinct from rpc_url, before any broadcast — enforced in
+    `policy.evaluate`. Set False for sequencer-controlled chains (most L2s)
+    and testnets where MEV is not a threat."""
     explorer_api_url: str
     explorer_tx_url: str  # template with {tx}
     native_symbol: str
@@ -29,6 +41,10 @@ _BUILTIN_PRESETS: dict[str, dict] = {
         "chain_id": 11155111,
         "rpc_url_env": "WALLET_SEPOLIA_RPC",
         "rpc_url_default": "https://ethereum-sepolia.publicnode.com",
+        # Sepolia is a testnet — no public-mempool MEV threat model. Explicit
+        # opt-out keeps the policy gate quiet here while the schema default
+        # (True, fail-closed) protects any new chain added without thinking.
+        "mev_exposure": False,
         "explorer_api_url": "https://api.etherscan.io/v2/api",
         "explorer_tx_url": "https://sepolia.etherscan.io/tx/{tx}",
         "native_symbol": "ETH",
@@ -214,6 +230,8 @@ def get_chain(name: str = "sepolia") -> ChainConfig:
         name=preset["name"],
         chain_id=preset["chain_id"],
         rpc_url=rpc_url,
+        broadcast_rpc_url=preset.get("broadcast_rpc_url"),
+        mev_exposure=preset.get("mev_exposure", True),
         explorer_api_url=preset["explorer_api_url"],
         explorer_tx_url=preset["explorer_tx_url"],
         native_symbol=preset["native_symbol"],

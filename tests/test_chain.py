@@ -89,3 +89,65 @@ def test_chain_show_sepolia_includes_protocols(isolated_chains):
     assert parsed["data"]["chain_id"] == 11155111
     assert "uniswap_v3" in parsed["data"]["protocols"]
     assert "aave_v3" in parsed["data"]["protocols"]
+
+
+# --- broadcast_rpc_url + mev_exposure plumbing -------------------------------
+
+
+def test_chainconfig_defaults_mev_exposure_true_fail_closed():
+    """A new chain config with neither field set defaults to mev_exposure=True
+    (fail-closed). The policy gate then requires an explicit broadcast_rpc_url
+    before any broadcast on that chain."""
+    cfg = config_mod.ChainConfig(
+        name="custom",
+        chain_id=12345,
+        rpc_url="https://rpc.example.invalid",
+        explorer_api_url="https://api.example/v2/api",
+        explorer_tx_url="https://example/tx/{tx}",
+        native_symbol="ETH",
+    )
+    assert cfg.mev_exposure is True
+    assert cfg.broadcast_rpc_url is None
+
+
+def test_chainconfig_round_trips_broadcast_rpc_url_and_mev_exposure():
+    cfg = config_mod.ChainConfig(
+        name="ethereum",
+        chain_id=1,
+        rpc_url="https://eth.llamarpc.com",
+        broadcast_rpc_url="https://rpc.flashbots.net",
+        mev_exposure=True,
+        explorer_api_url="https://api.etherscan.io/v2/api",
+        explorer_tx_url="https://etherscan.io/tx/{tx}",
+        native_symbol="ETH",
+    )
+    blob = cfg.model_dump_json()
+    parsed = config_mod.ChainConfig.model_validate_json(blob)
+    assert parsed.broadcast_rpc_url == "https://rpc.flashbots.net"
+    assert parsed.mev_exposure is True
+
+
+def test_builtin_sepolia_explicitly_opts_out_of_mev_exposure(isolated_chains):
+    """Sepolia preset must declare mev_exposure=False so the policy gate
+    stays quiet on testnet without operator action."""
+    chain = config_mod.get_chain("sepolia")
+    assert chain.mev_exposure is False
+    assert chain.broadcast_rpc_url is None
+
+
+def test_user_chains_json_can_set_broadcast_rpc_url(isolated_chains):
+    (isolated_chains / "chains.json").write_text(json.dumps({
+        "ethereum": {
+            "name": "ethereum",
+            "chain_id": 1,
+            "rpc_url": "https://eth.llamarpc.com",
+            "broadcast_rpc_url": "https://rpc.flashbots.net",
+            "explorer_api_url": "https://api.etherscan.io/v2/api",
+            "explorer_tx_url": "https://etherscan.io/tx/{tx}",
+            "native_symbol": "ETH",
+        }
+    }))
+    chain = config_mod.get_chain("ethereum")
+    assert chain.broadcast_rpc_url == "https://rpc.flashbots.net"
+    # User chain configs default to mev_exposure=True (Pydantic schema default).
+    assert chain.mev_exposure is True
