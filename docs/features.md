@@ -307,6 +307,41 @@ tx_hash)` triples. Replaying with the same id returns the cached result;
 reusing the id with DIFFERENT params raises `idempotency_mismatch` so
 agents don't accidentally double-spend on retry.
 
+### MEV exposure gate (mainnet-class chains)
+
+Mainnet and any EVM chain with a public mempool route `eth_sendRawTransaction`
+through a separate endpoint than reads, so the signed tx never enters the
+public mempool where sandwich bots can frontrun it. The capability is
+declared per-chain (`mev_exposure: bool`, default `true` = fail-closed) and
+enforced by `policy.evaluate` **before** any other category dispatch:
+
+```
+# hypothetical mainnet chain registered without broadcast_rpc_url
+wallet send vitalik 0.1 --chain ethereum --broadcast --yes
+# → error: policy_block — mev-exposed-broadcast-rpc-url-unset
+```
+
+`broadcast_rpc_url` must be set AND distinct from `rpc_url` — an env-var
+typo, a forgotten export, or a copy-paste that collapses the split all
+get caught before signing. Reasons: `mev-exposed-broadcast-rpc-url-unset`
+/ `mev-exposed-broadcast-equals-read`. Crucially this is a **capability
+check, not a policy rule**, so operators never need `--policy-bypass` to
+work on chains where MEV doesn't apply — and the bypass habit that would
+destroy the gate never forms.
+
+Sequencer-controlled L2s (Base, Arbitrum, Optimism) and testnets declare
+`mev_exposure: false`. On those chains the entire MEV path is inert:
+no gate check fires, `eth_sendRawTransaction` reuses `rpc_url`,
+`broadcast_path` is tagged `public_rpc` for the audit trail, zero
+behavioral overhead vs pre-1.07. The fail-closed default exists to
+catch future mainnet-class integrations from operator drift, not to add
+work on chains without a public mempool.
+
+Success envelopes carry `data.broadcast_path: "private_relay" |
+"public_rpc"` so agents can tell at a glance whether a tx will sit in a
+relay queue (1–3 block inclusion delay typical, not visible on Etherscan
+until included) or hit the public RPC path immediately.
+
 ---
 
 ## 8. JSON output for agents

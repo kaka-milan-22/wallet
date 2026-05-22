@@ -395,7 +395,13 @@ sit in a private relay queue (1–3 block inclusion delay typical, not
 visible on Etherscan until included) or hit the public mempool.
 
 Built-in `sepolia` ships with `mev_exposure: false` because testnets have
-no MEV threat — the gate stays quiet, current behavior preserved.
+no MEV threat — the gate stays quiet, current behavior preserved. The
+same holds for sequencer-controlled L2s (Base, Arbitrum, Optimism): with
+`mev_exposure: false` the MEV path is fully inert — no gate check fires,
+`eth_sendRawTransaction` reuses `rpc_url`, `broadcast_path` is tagged
+`public_rpc` for the audit trail. The fail-closed default is there to
+catch future mainnet-class integrations from operator drift, not to add
+overhead on chains without a public mempool.
 
 **Public RPC choice for the read path** — for "use without registering
 with anyone": `https://eth.drpc.org`, `https://ethereum.publicnode.com`,
