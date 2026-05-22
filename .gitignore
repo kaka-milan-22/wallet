@@ -44,3 +44,4 @@ chains.local.json
 
 # User-local overrides
 *.local
+.claude/settings.local.json
