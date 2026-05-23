@@ -73,6 +73,67 @@ def test_send_function_body_runs_with_all_names_resolved(monkeypatch, tmp_path: 
     )
 
 
+def test_send_swapped_args_emits_did_you_mean_hint(monkeypatch, tmp_path: Path):
+    """`wallet send 0.001 0xAddr` is the routinely-made mistake of typing
+    AMOUNT first then TO. The plain `cannot resolve address: '0.001'` is
+    useless — surface a directly-runnable retry command instead."""
+    import json
+    monkeypatch.setenv("WALLET_HOME", str(tmp_path))
+    monkeypatch.setattr("wallet.cli.send.make_web3_or_exit", lambda cfg, command: None)
+
+    # Minimal state so resolve_account succeeds (one default account).
+    (tmp_path / "state.json").write_text(json.dumps({
+        "default_account": "alice",
+        "default_chain": "sepolia",
+        "accounts": [{
+            "name": "alice",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+            "derivation_path": "m/44'/60'/0'/0/0",
+            "vault_key": "stub",
+        }],
+        "book": {}, "watch": [], "tokens": [],
+    }))
+
+    addr = "0xFb0bD07524C7FBaa947CA4f7BBa445F9a749d126"
+    result = CliRunner().invoke(app, ["--json", "send", "0.001", addr])
+    assert result.exit_code == 2, result.output
+    env = json.loads(result.output.strip().splitlines()[-1])
+    assert env["error"] == "validation_error"
+    # Original "cannot resolve address" still present (don't lose info)…
+    assert "cannot resolve address" in env["reason"]
+    # …plus the actionable did-you-mean line.
+    assert f"wallet send {addr} 0.001" in env["reason"]
+
+
+def test_send_invalid_to_without_amount_swap_still_emits_plain_error(
+    monkeypatch, tmp_path: Path
+):
+    """The swap-hint must only trigger when `amount` looks like a 0x
+    address — random typos in `to` should still surface the plain error
+    so we don't mislead the user with a wrong suggestion."""
+    import json
+    monkeypatch.setenv("WALLET_HOME", str(tmp_path))
+    monkeypatch.setattr("wallet.cli.send.make_web3_or_exit", lambda cfg, command: None)
+
+    (tmp_path / "state.json").write_text(json.dumps({
+        "default_account": "alice",
+        "default_chain": "sepolia",
+        "accounts": [{
+            "name": "alice",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+            "derivation_path": "m/44'/60'/0'/0/0",
+            "vault_key": "stub",
+        }],
+        "book": {}, "watch": [], "tokens": [],
+    }))
+
+    result = CliRunner().invoke(app, ["--json", "send", "notanaddress", "0.001"])
+    assert result.exit_code == 2, result.output
+    env = json.loads(result.output.strip().splitlines()[-1])
+    assert "cannot resolve address" in env["reason"]
+    assert "did you mean" not in env["reason"]
+
+
 def test_approve_show_function_body_runs_with_all_names_resolved(
     monkeypatch, tmp_path: Path
 ):

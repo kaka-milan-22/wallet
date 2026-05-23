@@ -23,6 +23,20 @@ from wallet.storage.state import load_state
 console = Console()
 
 
+def _looks_like_number(s: str) -> bool:
+    """Cheap check: bare decimal like `0.001`, `42`, `1e-3`. Used only to
+    decide whether to emit an arg-order-swap hint — never for parsing."""
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _looks_like_address(s: str) -> bool:
+    return s.startswith("0x") and len(s) == 42
+
+
 def send(
     to: str = typer.Argument(..., help="Recipient: 0x address, @alias, or known name"),
     amount: str = typer.Argument(..., help="Amount in human units (e.g. 0.01)"),
@@ -47,7 +61,24 @@ def send(
 
     sender = resolve_account(state, account)
 
-    to_addr = resolve_address(state, to)
+    try:
+        to_addr = resolve_address(state, to)
+    except typer.BadParameter as e:
+        # Most CLIs are `<AMOUNT> <TO>` so users routinely flip it. If `to`
+        # parses as a number and `amount` looks like a 0x address, the
+        # bare "cannot resolve address" is unhelpful — surface the swap
+        # explicitly so the agent / human retries without guessing.
+        hint = ""
+        if _looks_like_number(to) and _looks_like_address(amount):
+            hint = (
+                f" — argument order is `wallet send <TO> <AMOUNT>`; "
+                f"did you mean `wallet send {amount} {to}`?"
+            )
+        emit_error(
+            "validation_error", command="send", chain=cfg.name,
+            reason=str(e) + hint,
+        )
+        raise typer.Exit(code=2)
 
     try:
         if token is None:
