@@ -169,5 +169,49 @@ def info(
     emit(data, render)
 
 
+_GLOBAL_FLAGS = ("--json", "--quiet", "-q", "--explain", "--debug")
+
+
+def _global_flag_hint(error_message: str) -> str | None:
+    """If `error_message` is click's "No such option: --X" for a top-level
+    wallet flag, return a one-line hint telling the user to move the flag
+    before the subcommand. Returns None for any other error."""
+    for flag in _GLOBAL_FLAGS:
+        if f"No such option: {flag}" in error_message:
+            return (
+                f"Hint: `{flag}` is a top-level option — put it BEFORE the "
+                f"subcommand, e.g. `wallet {flag} <subcommand> …`"
+            )
+    return None
+
+
+def main() -> None:
+    """Console entry point. Wraps `app()` to catch the common mistake of
+    placing a global flag AFTER the subcommand (e.g. `wallet account list
+    --json` → click's "No such option: --json"). When that pattern is
+    detected we print the original error then a one-line hint pointing
+    at the global-flag-before-subcommand rule, so the agent / human can
+    self-correct without diving into `--help`."""
+    import sys
+
+    import click
+
+    try:
+        app(standalone_mode=False)
+    except click.exceptions.UsageError as e:
+        e.show()
+        hint = _global_flag_hint(e.format_message())
+        if hint:
+            click.echo(hint, err=True)
+        sys.exit(e.exit_code if getattr(e, "exit_code", None) is not None else 2)
+    except click.exceptions.Abort:
+        click.echo("Aborted!", err=True)
+        sys.exit(1)
+    except click.exceptions.Exit as e:
+        sys.exit(e.exit_code)
+    except SystemExit:
+        raise
+
+
 if __name__ == "__main__":
-    app()
+    main()
