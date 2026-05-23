@@ -31,6 +31,8 @@ def set_allowance(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key (uuid). Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Approve a spender to move tokens on your behalf."""
     state = load_state()
@@ -71,6 +73,7 @@ def set_allowance(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes, policy_bypass=policy_bypass,
         request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -149,6 +152,8 @@ def revoke(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key (uuid). Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Revoke a spender's allowance (sets it to 0)."""
     state = load_state()
@@ -176,4 +181,5 @@ def revoke(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes, policy_bypass=policy_bypass,
         request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )

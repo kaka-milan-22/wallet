@@ -292,6 +292,8 @@ def supply(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Supply tokens to an Aave V3 reserve (earn supply APR)."""
     from wallet.cli._output import emit_error as _emit_err
@@ -354,6 +356,7 @@ def supply(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -368,6 +371,8 @@ def withdraw(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Withdraw tokens from an Aave V3 reserve.
 
@@ -424,6 +429,7 @@ def withdraw(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -437,6 +443,8 @@ def faucet(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Mint Aave testnet mock tokens via the public faucet contract.
 
@@ -485,6 +493,7 @@ def faucet(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -498,6 +507,8 @@ def borrow(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Borrow tokens from Aave V3 against your supplied collateral (variable rate).
 
@@ -546,6 +557,7 @@ def borrow(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -560,6 +572,8 @@ def repay(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Repay an Aave V3 variable-rate borrow.
 
@@ -637,4 +651,5 @@ def repay(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )

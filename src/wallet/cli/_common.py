@@ -494,6 +494,74 @@ def _audit_event(
         pass
 
 
+def _poll_receipt(w3, tx_hash: str, timeout: int) -> dict:
+    """Block until the tx mines (or timeout) and return a `wait` sub-envelope.
+
+    On success/revert the dict carries block_number, block_hash, gas_used and
+    the effective fee actually paid (which differs from the pre-broadcast
+    `estimated_fee` because actual gas consumed and effective gas price are
+    only known post-inclusion). On timeout the broadcast itself still
+    succeeded — callers should keep `ok: true` and let the user re-query.
+    """
+    from web3.exceptions import TimeExhausted
+
+    try:
+        receipt = w3.eth.wait_for_transaction_receipt(
+            tx_hash, timeout=timeout, poll_latency=2
+        )
+    except TimeExhausted:
+        return {"status": "timeout", "waited_seconds": timeout, "tx_hash": tx_hash}
+
+    def _get(key, default=None):
+        if hasattr(receipt, "get"):
+            return receipt.get(key, default)
+        return getattr(receipt, key, default)
+
+    status_raw = _get("status", 1)
+    block_number = int(_get("blockNumber") or 0)
+    block_hash = _get("blockHash")
+    block_hash_hex = block_hash.hex() if hasattr(block_hash, "hex") else str(block_hash or "")
+    if block_hash_hex and not block_hash_hex.startswith("0x"):
+        block_hash_hex = "0x" + block_hash_hex
+    gas_used = int(_get("gasUsed") or 0)
+    egp = int(_get("effectiveGasPrice") or 0)
+    effective_fee_wei = gas_used * egp
+
+    out = {
+        "status": "success" if int(status_raw) == 1 else "reverted",
+        "block_number": block_number,
+        "block_hash": block_hash_hex,
+        "gas_used": gas_used,
+        "effective_gas_price_wei": str(egp),
+        "effective_fee_wei": str(effective_fee_wei),
+        "effective_fee": format_units(effective_fee_wei, 18),
+    }
+    tx_index = _get("transactionIndex")
+    if tx_index is not None:
+        out["tx_index"] = int(tx_index)
+    return out
+
+
+def _render_wait_line(wait_data: dict) -> None:
+    """Print a one-line wait summary in rich mode (no-op under --json)."""
+    status = wait_data["status"]
+    if status == "success":
+        info(
+            f"[green]confirmed:[/green] block {wait_data['block_number']} · "
+            f"gas used {wait_data['gas_used']} · fee {wait_data['effective_fee']} ETH"
+        )
+    elif status == "reverted":
+        info(
+            f"[red]reverted:[/red] block {wait_data['block_number']} · "
+            f"gas used {wait_data['gas_used']} · fee {wait_data['effective_fee']} ETH"
+        )
+    elif status == "timeout":
+        info(
+            f"[yellow]wait timeout[/yellow] after {wait_data['waited_seconds']}s "
+            "— tx may still confirm; re-check via explorer or `wallet tx pending`"
+        )
+
+
 def confirm_and_broadcast(
     w3,
     state: WalletState,
@@ -506,6 +574,8 @@ def confirm_and_broadcast(
     policy_bypass: bool = False,
     request_id: str | None = None,
     preserve_nonce: bool = False,
+    wait: bool = False,
+    wait_timeout: int = 60,
 ) -> None:
     """Drive a PreparedTx through preview / policy / idempotency / sign / broadcast.
 
@@ -513,6 +583,13 @@ def confirm_and_broadcast(
     recovery (cancel / replace) where the PreparedTx is pinned to a specific
     pre-existing mempool nonce — refreshing would defeat the EIP-1559
     replacement semantics.
+
+    `wait=True` polls `eth_getTransactionReceipt` after broadcast (and after
+    an idempotent replay if the cached entry has a tx_hash) and merges a
+    `wait` sub-dict into `data`. On revert the envelope flips to ok=false /
+    code=tx_reverted (exit 5); on timeout it stays ok=true with
+    wait.status=timeout (exit 0) so the broadcast itself is still reported
+    as successful — the tx_hash is valid, only the receipt is unknown.
     """
     from wallet.cli._caller import caller_kind
     from wallet.core import policy as policy_mod
@@ -603,6 +680,10 @@ def confirm_and_broadcast(
                 "outcome": "replayed_idempotent",
                 "original_created_at": cached.created_at,
             })
+            wait_data_replay = None
+            if wait and cached.tx_hash:
+                wait_data_replay = _poll_receipt(w3, cached.tx_hash, wait_timeout)
+                replay_data["wait"] = wait_data_replay
             # `replayed: true` is a top-level flag so agents can distinguish
             # cache-hit from a fresh broadcast without parsing data.phase.
             # See security_review.md Vuln 2.
@@ -622,7 +703,14 @@ def confirm_and_broadcast(
                         chain.explorer_tx_url.replace("{tx}", cached.tx_hash),
                         soft_wrap=True, style="dim", highlight=False,
                     )
+                if wait_data_replay is not None:
+                    _render_wait_line(wait_data_replay)
 
+            if wait_data_replay and wait_data_replay["status"] == "reverted":
+                envelope["ok"] = False
+                envelope["code"] = "tx_reverted"
+                emit(envelope, render_replay)
+                raise typer.Exit(code=5)
             emit(envelope, render_replay)
             return
     elif caller == "agent":
@@ -767,6 +855,12 @@ def confirm_and_broadcast(
         "outcome": "broadcast",
         "broadcast_path": broadcast_path,
     })
+
+    wait_data = None
+    if wait:
+        wait_data = _poll_receipt(w3, tx_hash, wait_timeout)
+        success_data["wait"] = wait_data
+
     envelope = {"ok": True, "command": cmd, "chain": chain.name, "data": success_data}
 
     def render_success(_e):
@@ -786,5 +880,12 @@ def confirm_and_broadcast(
                 "mempool. Block inclusion typically takes 1–3 blocks. "
                 "Monitor: `wallet tx pending`.[/dim]"
             )
+        if wait_data is not None:
+            _render_wait_line(wait_data)
 
+    if wait_data and wait_data["status"] == "reverted":
+        envelope["ok"] = False
+        envelope["code"] = "tx_reverted"
+        emit(envelope, render_success)
+        raise typer.Exit(code=5)
     emit(envelope, render_success)

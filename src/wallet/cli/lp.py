@@ -149,6 +149,8 @@ def collect(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass"),
     request_id: str | None = typer.Option(None, "--request-id"),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Sweep accrued fees + already-decreased liquidity to `recipient` (default sender)."""
     state = load_state()
@@ -185,6 +187,7 @@ def collect(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -201,6 +204,8 @@ def remove(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass"),
     request_id: str | None = typer.Option(None, "--request-id"),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Burn `--percent`% of a position's liquidity.
 
@@ -243,6 +248,7 @@ def remove(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -285,6 +291,8 @@ def mint(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass"),
     request_id: str | None = typer.Option(None, "--request-id"),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Open a new Uniswap V3 LP position.
 
@@ -355,6 +363,7 @@ def mint(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )
 
 
@@ -372,6 +381,8 @@ def increase(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass"),
     request_id: str | None = typer.Option(None, "--request-id"),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Add liquidity to an existing position. Token pair must match the position's
     on-chain (token0, token1) — order on the CLI is normalized automatically."""
@@ -435,4 +446,5 @@ def increase(
         w3, state, cfg, sender, prepared,
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
+        wait=wait, wait_timeout=wait_timeout,
     )

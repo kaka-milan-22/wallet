@@ -18,7 +18,7 @@ from wallet.cli._common import (
     make_web3_or_exit,
     resolve_account,
 )
-from wallet.cli._output import OutputMode, emit, emit_error, stdout_console
+from wallet.cli._output import emit, emit_error, stdout_console
 from wallet.core.config import get_chain
 from wallet.core.tx_replace import (
     StuckTxError,
@@ -105,6 +105,8 @@ def cancel(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for agent broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Drop a 0-value self-send into <nonce> to free a stuck mempool slot."""
     state = load_state()
@@ -121,6 +123,8 @@ def cancel(
         policy_bypass=policy_bypass,
         request_id=request_id,
         preserve_nonce=True,
+        wait=wait,
+        wait_timeout=wait_timeout,
     )
 
 
@@ -134,6 +138,8 @@ def replace(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for agent broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Re-broadcast the original tx at <nonce> with higher gas."""
     state = load_state()
@@ -161,4 +167,6 @@ def replace(
         policy_bypass=policy_bypass,
         request_id=request_id,
         preserve_nonce=True,
+        wait=wait,
+        wait_timeout=wait_timeout,
     )

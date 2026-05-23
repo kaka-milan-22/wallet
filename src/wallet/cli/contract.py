@@ -62,6 +62,8 @@ def call(
         None, "--request-id",
         help="Idempotency key. Required for non-TTY broadcast.",
     ),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Sign and broadcast an arbitrary contract call.
 
@@ -111,4 +113,6 @@ def call(
         yes=yes,
         policy_bypass=False,  # this command IS the bypass; don't stack
         request_id=request_id,
+        wait=wait,
+        wait_timeout=wait_timeout,
     )

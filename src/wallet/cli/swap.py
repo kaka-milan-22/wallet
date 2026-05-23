@@ -62,6 +62,8 @@ def swap(
     yes: bool = typer.Option(False, "--yes", "-y"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key. Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Swap an ERC-20 / ETH for another ERC-20 / ETH via a DEX route provider.
 
@@ -144,4 +146,6 @@ def swap(
         yes=yes,
         policy_bypass=policy_bypass,
         request_id=request_id,
+        wait=wait,
+        wait_timeout=wait_timeout,
     )

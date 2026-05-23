@@ -33,6 +33,8 @@ def send(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     policy_bypass: bool = typer.Option(False, "--policy-bypass", help="Skip policy gate (TTY-only; ignored in agent mode)"),
     request_id: str | None = typer.Option(None, "--request-id", help="Idempotency key (uuid). Required for non-TTY broadcast."),
+    wait: bool = typer.Option(False, "--wait", help="Block until tx receipt; merges block/gas/fee into envelope. Exit 5 on revert."),
+    wait_timeout: int = typer.Option(60, "--wait-timeout", envvar="WALLET_WAIT_TIMEOUT", help="Seconds to wait for receipt (default 60)."),
 ) -> None:
     """Send native ETH or an ERC-20 token to an address.
 
@@ -76,4 +78,6 @@ def send(
         yes=yes,
         policy_bypass=policy_bypass,
         request_id=request_id,
+        wait=wait,
+        wait_timeout=wait_timeout,
     )
