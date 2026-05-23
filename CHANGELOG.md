@@ -20,9 +20,128 @@ Next planned tracks:
   gating item; see `docs/why_hard_wallet.md`.
 - **`wallet policy verify`** — Etherscan round-trip of allowlist entries
   remains planned. The MEV-protected-broadcast half of the original plan
-  shipped in `1.07` below.
+  shipped in `1.07`.
 - **Strategy daemon** — separate repo, consumes the now-stable primitive
   surface; out of scope per `.claude/skills/wallet-scope-litmus/SKILL.md`.
+
+---
+
+## [1.08] — 2026-05-23 — Agent-driven UX hardening from 4× Sepolia rehearsals
+
+Folds back every gap a real agent driving the wallet through the full
+DeFi surface hit on Sepolia. Four end-to-end runs of the `aave +
+swap + lp` recipe over the past two days each surfaced one more
+asymmetry between what the CLI expected and what the agent /
+operator naturally typed; each was closed before the next run.
+Net result: an agent can now drive the wallet through the documented
+worked recipe without `--help` deep dives or out-of-band sleeps.
+
+### Added
+
+- **`--wait` / `--wait-timeout` on every broadcast command** (16 callsites:
+  `send`, `approve {set,revoke}`, `swap`, `aave {supply,withdraw,borrow,
+  repay,faucet}`, `lp {mint,increase,remove,collect}`,
+  `tx {cancel,replace}`, `contract call`). Polls `eth_getTransactionReceipt`
+  after broadcast (and after idempotent-replay cache hits) and merges a
+  `wait` sub-envelope with `block_number`, `block_hash`, `gas_used`,
+  `effective_gas_price_wei`, `effective_fee_wei`, `effective_fee`,
+  `tx_index`. Replaces the prior `sleep 18 && wallet …` polling
+  pattern in agent flows. Timeout default 60s, env var
+  `WALLET_WAIT_TIMEOUT`. New error code `tx_reverted` (exit 5) for
+  on-chain reverts caught by `--wait`; timeout keeps `ok: true` so
+  the tx_hash is not lost.
+- **`aave rates` now returns supply/borrow cap fields** —
+  `supply_cap`, `supply_cap_wei`, `supply_cap_used_pct`,
+  `supply_used`, `supply_used_wei` and the symmetric `borrow_*`
+  group. `null` cap = unlimited (Aave V3 convention). Lets an agent
+  pre-flight `SUPPLY_CAP_EXCEEDED` before broadcast instead of
+  catching it as a simulation revert. Backed by a new `getReserveCaps`
+  ABI binding + `cap_utilization_pct()` helper that hides the Aave V3
+  decimals quirk (caps are whole-token integers, `totalAToken` is
+  decimals-applied raw wei — naive ratio is off by `10**decimals`).
+- **`lp mint` slippage revert carries expected `(amount0, amount1)`** —
+  the dominant `Price slippage check` revert (desired amounts don't
+  match the pool's current ratio at `current_tick`) now produces an
+  error envelope with `lp_pool_address`, `lp_current_tick`,
+  `lp_current_sqrt_price_x96`, `lp_amount{0,1}_expected_wei`,
+  `lp_binding_side`, and a directly-actionable `data.suggestion`
+  string (e.g. *"at tick 187535 the binding side is token0; reduce
+  `--amount-b` to ~0.000435 WETH"*). Adds `get_liquidity_for_amount{0,1,s}`
+  to `core.uniswap_v3_math` (port of v3-periphery `LiquidityAmounts`).
+- **`wallet send` arg-order detection** — `wallet send 0.001 0xAddr`
+  (the common AMOUNT-first slip) now emits a `validation_error`
+  whose `reason` carries a directly-runnable retry: *"did you mean
+  `wallet send 0xFb0b…d126 0.001`?"*. Plain "cannot resolve address"
+  preserved when `amount` doesn't look like a 0x address — no
+  misleading suggestion.
+- **Global flag misplacement hint** — `wallet account list --json`
+  (instead of the correct `wallet --json account list`) now follows
+  click's `No such option: --json` error with a one-line hint
+  pointing at the global-flag-before-subcommand rule, for any of
+  the five top-level flags (`--json`, `--quiet`, `-q`, `--explain`,
+  `--debug`). New `main()` entry wraps `app(standalone_mode=False)`;
+  the typer instance `app` is unchanged so existing CliRunner-based
+  tests keep working.
+
+### Changed
+
+- **`approve set <symbol> <aave-pool>` auto-resolves to the Aave reserve.**
+  When the spender matches `get_protocol_address(chain, "aave_v3", "pool")`
+  and `<token>` is a symbol (not a raw 0x address), `approve` switches
+  from the builtin token resolver (Circle USDC, canonical WETH, …) to
+  `resolve_aave_reserve` (Aave's own mock token list on testnets).
+  Eliminates the "two USDCs" footgun in `docs/TESTING.md` —
+  `approve set USDC <aave-pool> 10` now lands on the Aave mock USDC
+  the pool actually checks, not Circle USDC the agent has no balance
+  of. A `[dim]auto-resolving USDC to Aave reserve 0x…[/dim]` info
+  line surfaces the substitution. Raw 0x addresses bypass the
+  rewrite — manual control preserved.
+
+### Fixed
+
+- **`wallet aave {supply,withdraw,borrow,repay,faucet}` no longer leak
+  Python tracebacks on simulation revert.** `core.tx._simulate` wraps
+  web3's `ContractLogicError` as `RuntimeError("simulation reverted: …")`,
+  but the 5 aave write commands only caught `ContractLogicError`.
+  Surfaced during the 3rd Sepolia rehearsal when `aave withdraw --max`
+  hit Aave's transient `LIQUIDITY_LESS_THAN_AVAILABLE` (LINK reserve
+  drained mid-block at 200%+ borrow demand) and the agent got a
+  20-line traceback instead of the expected
+  `{"code":"simulation_reverted",…}` envelope. Each command now also
+  catches `RuntimeError` with the same `_aave_error_hint` enrichment.
+  Parametrized regression test exercises all 5 commands by mocking
+  `prepare_*` to raise — no longer depends on testnet timing to
+  catch the regression.
+
+### Docs
+
+- **`docs/skills/wallet-agent.skill.md` rewritten as a complete agent
+  reference** — adds a worked Sepolia recipe, an LP section (was
+  missing entirely), the `--wait` pattern as recommended default,
+  the new `tx_reverted` / `simulation_reverted` rejection rows with
+  a deterministic-vs-transient retry policy (Aave pool drain / LP
+  in-block tick drift / nonce race are documented transient
+  classes), a cap pre-flight one-liner for `aave rates`, and a flag
+  position conventions section. Drove 4 successful end-to-end
+  rehearsals after each round of refinement.
+- **`tests/test_wait_flag.py`** (8 tests), **`tests/test_cli_approve_aave.py`**
+  (3 tests), **`tests/test_cli_aave_simulation_revert.py`** (5
+  parametrized tests), **`tests/test_cli_global_flag_hint.py`** (7
+  parametrized tests), **`tests/test_uniswap_v3_math.py`** (+6
+  liquidity-inverse tests), **`tests/test_cli_lp.py`** (+2 slippage
+  enrichment tests), **`tests/test_send.py`** (+2 arg-swap hint tests),
+  **`tests/test_aave.py`** (+2 cap tests). 440 passing, no
+  regressions.
+
+Files: `src/wallet/cli/_common.py`, `src/wallet/cli/aave.py`,
+`src/wallet/cli/approve.py`, `src/wallet/cli/app.py`,
+`src/wallet/cli/contract.py`, `src/wallet/cli/lp.py`,
+`src/wallet/cli/send.py`, `src/wallet/cli/swap.py`,
+`src/wallet/cli/tx.py`, `src/wallet/core/uniswap_v3_math.py`,
+`src/wallet/protocols/aave.py`,
+`src/wallet/protocols/uniswap_v3_lp.py`, `pyproject.toml`
+(entry point `:app` → `:main`), `docs/skills/wallet-agent.skill.md`,
+plus the 8 new/updated test files above.
 
 ---
 
