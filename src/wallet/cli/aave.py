@@ -366,6 +366,19 @@ def supply(
             data=_aave_error_hint(str(e)),
         )
         raise typer.Exit(code=3)
+    except RuntimeError as e:
+        # `_simulate` (core.tx) wraps web3's ContractLogicError as a
+        # RuntimeError("simulation reverted: …"). Same on-chain meaning as
+        # ContractLogicError above — without this catch the raw Python
+        # traceback leaks past the typer JSON envelope (observed on Sepolia
+        # Aave `LIQUIDITY_LESS_THAN_AVAILABLE`).
+        _emit_err(
+            "simulation_reverted",
+            command="aave.supply", chain=cfg.name,
+            reason=str(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
@@ -439,6 +452,14 @@ def withdraw(
             data=_aave_error_hint(str(e)),
         )
         raise typer.Exit(code=3)
+    except RuntimeError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.withdraw", chain=cfg.name,
+            reason=str(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
@@ -503,6 +524,14 @@ def faucet(
             data=_aave_error_hint(str(e)),
         )
         raise typer.Exit(code=3)
+    except RuntimeError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.faucet", chain=cfg.name,
+            reason=str(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
 
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
@@ -564,6 +593,14 @@ def borrow(
             "simulation_reverted",
             command="aave.borrow", chain=cfg.name,
             reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
+    except RuntimeError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.borrow", chain=cfg.name,
+            reason=str(e),
             data=_aave_error_hint(str(e)),
         )
         raise typer.Exit(code=3)
@@ -658,6 +695,14 @@ def repay(
             "simulation_reverted",
             command="aave.repay", chain=cfg.name,
             reason=_format_revert(e),
+            data=_aave_error_hint(str(e)),
+        )
+        raise typer.Exit(code=3)
+    except RuntimeError as e:
+        _emit_err(
+            "simulation_reverted",
+            command="aave.repay", chain=cfg.name,
+            reason=str(e),
             data=_aave_error_hint(str(e)),
         )
         raise typer.Exit(code=3)
