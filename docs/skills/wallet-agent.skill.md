@@ -164,13 +164,22 @@ Workflow EVERY time:
        violations — anything the wallet pre-flighted but the chain
        state diverged at execution) → do NOT retry; same params will
        fail the same way. Adjust amounts or surface to the user.
-     - **Transient** reverts (Aave pool liquidity dipped below your
-       supply during the same block, nonce race, RPC blip) → one
-       retry with a fresh `--request-id` is fine; if it reverts a
-       second time treat as deterministic. The canonical case is
-       Aave `withdraw --max` on a high-utilization reserve
-       (Sepolia LINK at 200%+ borrow demand reverts intermittently
-       with `LIQUIDITY_LESS_THAN_AVAILABLE` even when your HF=inf).
+     - **Transient** reverts → one retry with a fresh
+       `--request-id` is fine; if it reverts a second time treat as
+       deterministic. Observed transient cases:
+       - Aave `borrow` / `withdraw --max` on a high-utilization
+         reserve where the pool liquidity dipped mid-block
+         (Sepolia LINK at 200%+ borrow demand throws
+         `LIQUIDITY_LESS_THAN_AVAILABLE` intermittently even when
+         your HF=inf). One retry typically succeeds as borrows are
+         repaid in subsequent blocks.
+       - Uniswap V3 `lp remove` / `lp increase` whose slippage
+         tolerance is tight relative to in-block tick drift on
+         active pools — `amount_min0/min1` checks just barely fail
+         on the racy block, pass on the next. If retry also fails,
+         widen `--slippage-bps` rather than retrying a third time.
+       - Generic nonce race / RPC blip during private-relay submit
+         that surfaced as a revert in the receipt.
    - `wait.status == "timeout"` → envelope stays `ok: true`, exit 0,
      `tx_hash` is valid. The tx may still mine; re-query via the
      explorer or wait longer.
