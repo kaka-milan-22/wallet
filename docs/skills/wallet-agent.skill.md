@@ -399,6 +399,7 @@ Common policy errors and how to react:
 | `insufficient_allowance` | ERC-20 not approved for the swap router yet | Run the `suggested_command` from envelope.data, then retry |
 | `insufficient_funds` | Sender balance < value + gas fee | Reduce the amount, or fund the account; never retry with the same amount |
 | `superseded` | `tx cancel/replace` race — original landed first | Benign; the operation already settled on chain. No retry needed |
+| `simulation_reverted` | Pre-flight `eth_call` reverted before signing (exit 3) | Same transient-vs-deterministic split as `tx_reverted` below. Aave on Sepolia routinely surfaces `LIQUIDITY_LESS_THAN_AVAILABLE` here (pool drained mid-block); LP mint surfaces `Price slippage check` with the new `data.lp_amount{0,1}_expected_wei` + `data.suggestion` enrichment. Read `data.suggestion` if present, otherwise use the transient retry rule |
 | `tx_reverted` | `--wait` saw the tx revert on-chain (exit 5) | Broadcast succeeded but execution failed. Surface `data.wait.{block_number,gas_used}` + the explorer URL. Retry only when the revert is transient (Aave reserve liquidity dip, nonce race); never retry on deterministic reverts (HF / cap / slippage / policy). One retry max — second revert is deterministic by definition |
 | `first-send-blocked-for-agent` | Recipient never seen before | Ask user to confirm the address and add to book or watch |
 | `missing-request-id-for-agent` | You forgot `--request-id` | Generate a fresh uuid and retry |
