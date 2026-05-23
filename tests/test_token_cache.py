@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from wallet.core import tokens
 from wallet.core.tokens import TokenInfo, clear_token_info_cache, fetch_token_info
 
 

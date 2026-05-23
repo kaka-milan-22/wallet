@@ -11,7 +11,6 @@ import os
 import stat
 from pathlib import Path
 
-import pytest
 
 from wallet.core.config import atomic_write_text
 

@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from wallet.core import policy as policy_mod
-from wallet.core.policy import Decision, Policy, evaluate, save_policy
+from wallet.core.policy import Policy, evaluate, save_policy
 from wallet.core.tokens import MAX_UINT256
 from wallet.storage import audit
 from wallet.storage import state as state_mod
 from wallet.storage.state import (
-    AccountEntry,
-    TokenEntry,
     WalletState,
-    WatchEntry,
 )
 
 

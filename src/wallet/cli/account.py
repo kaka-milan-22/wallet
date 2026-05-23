@@ -5,7 +5,6 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from wallet.cli._caller import is_agent
 from wallet.cli._output import OutputMode, emit, emit_error, info, stdout_console
 from wallet.core import hd
 from wallet.storage import vault

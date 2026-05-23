@@ -8,7 +8,6 @@ import pytest
 
 from wallet.core.config import ChainConfig
 from wallet.protocols.aave import (
-    AAVE_BASE_DECIMALS,
     AaveReserve,
     base_to_usd,
     get_account_summary,

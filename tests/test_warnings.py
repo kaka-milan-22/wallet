@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 from wallet.cli._common import _build_data, _warnings_for
 from wallet.core.config import ChainConfig

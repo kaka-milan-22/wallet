@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from wallet.cli.portfolio import _Token, _fetch_balances_for, _gather_tokens
 from wallet.core.config import ChainConfig

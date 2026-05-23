@@ -66,12 +66,16 @@ def balance(
         unit = info.symbol
         decimals = info.decimals
         token_payload = {"symbol": info.symbol, "address": info.address, "decimals": info.decimals}
-        fetcher = lambda addr: balance_of(w3, info.address, addr)
+
+        def fetcher(addr: str) -> int:
+            return balance_of(w3, info.address, addr)
     else:
         unit = cfg.native_symbol
         decimals = 18
         token_payload = None
-        fetcher = lambda addr: w3.eth.get_balance(w3.to_checksum_address(addr))
+
+        def fetcher(addr: str) -> int:
+            return w3.eth.get_balance(w3.to_checksum_address(addr))
 
     balances: list[dict] = []
     for label, addr in targets:
