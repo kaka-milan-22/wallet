@@ -3,17 +3,20 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
+from web3 import Web3
+
 from wallet.cli._common import (
     confirm_and_broadcast,
     make_web3_or_exit,
     resolve_account,
     resolve_address,
 )
-from wallet.cli._output import emit, emit_error, stdout_console
-from wallet.core.config import get_chain
+from wallet.cli._output import emit, emit_error, info, stdout_console
+from wallet.core.config import get_chain, get_protocol_address
 from wallet.core.rpc import format_units, parse_units
-from wallet.core.tokens import MAX_UINT256, allowance as get_allowance, resolve_token
+from wallet.core.tokens import MAX_UINT256, TokenInfo, allowance as get_allowance, resolve_token
 from wallet.core.tx import prepare_erc20_approve
+from wallet.protocols.aave import resolve_aave_reserve
 from wallet.storage.state import load_state
 
 app = typer.Typer(no_args_is_help=True, help="ERC-20 approval management")
@@ -46,8 +49,37 @@ def set_allowance(
         emit_error("validation_error", command="approve", chain=cfg.name, reason=str(e))
         raise typer.Exit(code=2)
 
+    # Aave V3 registers its own (often mock) underlying tokens on testnets —
+    # `USDC` resolves to Circle's Sepolia USDC, but Aave's pool wants its
+    # own mock USDC at a different address. Without auto-resolution the
+    # approve lands on the wrong token and the subsequent `aave supply`
+    # still reverts with "insufficient_allowance". See docs/TESTING.md
+    # "Two different USDCs". Only triggers when (a) spender matches the
+    # configured aave_v3.pool for this chain and (b) `token` is a symbol,
+    # not a raw 0x address (raw addresses mean the user took manual
+    # control and we should not second-guess them).
+    token_is_address = token.strip().startswith("0x") and len(token.strip()) == 42
+    aave_pool_addr: str | None = None
     try:
-        info = resolve_token(w3, cfg, state, token)
+        aave_pool_addr = Web3.to_checksum_address(get_protocol_address(cfg, "aave_v3", "pool"))
+    except ValueError:
+        pass
+    is_aave_pool_target = aave_pool_addr is not None and spender_addr == aave_pool_addr
+
+    try:
+        if is_aave_pool_target and not token_is_address:
+            reserve = resolve_aave_reserve(w3, cfg, token)
+            token_info = TokenInfo(
+                symbol=reserve.symbol,
+                address=reserve.asset_address,
+                decimals=reserve.decimals,
+            )
+            info(
+                f"[dim]spender is the Aave V3 pool — auto-resolving {token!r} "
+                f"to Aave reserve {reserve.asset_address}[/dim]"
+            )
+        else:
+            token_info = resolve_token(w3, cfg, state, token)
     except ValueError as e:
         emit_error("not_found", command="approve", chain=cfg.name, reason=str(e))
         raise typer.Exit(code=2)
@@ -63,11 +95,11 @@ def set_allowance(
             emit_error("validation_error", command="approve", chain=cfg.name,
                        reason="amount required (or use --unlimited)")
             raise typer.Exit(code=2)
-        amount_raw = parse_units(amount, info.decimals)
+        amount_raw = parse_units(amount, token_info.decimals)
 
     prepared = prepare_erc20_approve(
-        w3, cfg, sender.address, info.address, spender_addr, amount_raw,
-        info.symbol, info.decimals,
+        w3, cfg, sender.address, token_info.address, spender_addr, amount_raw,
+        token_info.symbol, token_info.decimals,
     )
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
@@ -168,14 +200,14 @@ def revoke(
         raise typer.Exit(code=2)
 
     try:
-        info = resolve_token(w3, cfg, state, token)
+        token_info = resolve_token(w3, cfg, state, token)
     except ValueError as e:
         emit_error("not_found", command="revoke", chain=cfg.name, reason=str(e))
         raise typer.Exit(code=2)
 
     prepared = prepare_erc20_approve(
-        w3, cfg, sender.address, info.address, spender_addr, 0,
-        info.symbol, info.decimals,
+        w3, cfg, sender.address, token_info.address, spender_addr, 0,
+        token_info.symbol, token_info.decimals,
     )
     confirm_and_broadcast(
         w3, state, cfg, sender, prepared,
