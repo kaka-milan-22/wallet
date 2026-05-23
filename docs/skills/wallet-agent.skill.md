@@ -24,10 +24,23 @@ Error `code` values are enumerable: `validation_error`, `policy_block`,
 `idempotency_mismatch`, `not_found`, `rpc_error`, `vault_error`,
 `simulation_reverted`, `aborted`, `missing_request_id`, `confirmation_required`,
 `tty_required`, `no_route`, `insufficient_allowance`, `insufficient_funds`,
-`superseded`. Branch on these, not on `reason` text.
+`superseded`, `tx_reverted`. Branch on these, not on `reason` text.
 
 For debugging only, add `--explain` or `WALLET_EXPLAIN=1`. Decision details
 go to **stderr** so stdout JSON stays clean.
+
+## Flag position conventions
+
+- Global flags (`--json`, `--quiet`, `-q`, `--explain`, `--debug`) belong
+  **before** the subcommand: `wallet --json account list`, NOT
+  `wallet account list --json`. The latter is rejected with a
+  `No such option` error + an in-line hint pointing at the correct form.
+- Subcommand flags (`--broadcast`, `--wait`, `--slippage-bps`, …) go
+  **after** the subcommand.
+- `wallet send` is `<TO> <AMOUNT>` (not the more common `<AMOUNT> <TO>`).
+  Passing them reversed produces a `validation_error` carrying a
+  directly-runnable `did you mean wallet send <addr> <amount>?` line —
+  if you see that in `.reason`, just re-run with the suggested form.
 
 # Wallet usage rules for agents
 
@@ -65,6 +78,12 @@ wallet aave positions        | jq '.data.supplies[] | {symbol, amount}'         
 wallet aave rates            | jq '.data.rates[] | {symbol, supply: .supply_apr_pct, borrow: .variable_borrow_apr_pct}'
 wallet aave rates --token USDC | jq '.data.rates[0]'
 
+# Pre-flight: which reserves still have supply cap room? null cap = unlimited.
+# When supply_cap_used_pct >= 100 on the target reserve, `aave supply` will
+# revert with SUPPLY_CAP_EXCEEDED — check here first instead of catching the
+# simulation revert.
+wallet aave rates | jq '.data.rates[] | select(.supply_cap_used_pct != null) | {sym:.symbol, used:.supply_cap_used_pct, cap:.supply_cap}'
+
 # Aave V3 supply / withdraw / faucet (Phase 2 PR4) — writes, need --broadcast + --request-id
 wallet aave faucet USDC 1000 --broadcast --yes --request-id "$(uuidgen)"  # claim mock tokens (testnet only)
 wallet aave supply USDC 10                                                # dry-run preview, shows current HF
@@ -89,6 +108,10 @@ wallet aave repay USDC --max --broadcast --yes --request-id "$(uuidgen)"  # full
 #  - Aave uses its own (often mock) token deployments distinct from chain
 #    builtin tokens — `wallet aave rates` lists exactly the symbols available.
 #  - supply requires prior `wallet approve set <token> <pool> <amount>`.
+#    When `<pool>` is the Aave V3 pool address the wallet auto-resolves
+#    `<token>` symbols (e.g. `USDC`) to Aave's reserve list rather than
+#    the chain's builtin token — you do NOT need to pass the mock address
+#    manually. Look for `auto-resolving USDC to Aave reserve 0x…` on stderr.
 #  - withdraw triggers Aave's HF-must-stay-above-1 check; if it would revert,
 #    you get `simulation_reverted` before any signing happens.
 ```
@@ -117,6 +140,36 @@ Workflow EVERY time:
    wallet approve set <token> <spender> <amount> --broadcast --yes --request-id "$RID"
    wallet approve revoke <token> <spender> --broadcast --yes --request-id "$RID"
    ```
+
+   **Prefer `--wait`** for any tx whose follow-up depends on the previous
+   one having mined. With `--wait` the call blocks until receipt and
+   merges `data.wait = {status, block_number, gas_used, effective_fee, …}`
+   into the envelope; without it you have to `sleep 18 && wallet …`
+   poll yourself and risk reading stale state. `--wait-timeout` defaults
+   to 60s and reads `WALLET_WAIT_TIMEOUT` env var.
+
+   ```sh
+   wallet send <to> <amount> --broadcast --yes --wait --request-id "$RID" \
+     | jq '{tx:.data.tx_hash, status:.data.wait.status, block:.data.wait.block_number, fee:.data.wait.effective_fee}'
+   ```
+
+   Wait semantics:
+
+   - `wait.status == "success"` → exit 0, tx mined and didn't revert.
+   - `wait.status == "reverted"` → envelope becomes `ok: false`,
+     `code: tx_reverted`, exit **5**. Broadcast succeeded; the tx failed
+     on-chain. Surface `wait.block_number` + `wait.gas_used` to the user
+     for debugging; do NOT auto-retry (the revert reason is on-chain,
+     not in the envelope, so retrying with the same params reverts the
+     same way).
+   - `wait.status == "timeout"` → envelope stays `ok: true`, exit 0,
+     `tx_hash` is valid. The tx may still mine; re-query via the
+     explorer or wait longer.
+
+   `--wait` composes with idempotency: replaying the same request-id
+   while passing `--wait` polls receipt for the **cached** tx_hash, so
+   a retry after a network hiccup returns the same receipt instead of
+   re-broadcasting.
 6. **If the call fails with `error: rpc_error`** (transient network), RETRY
    using the SAME request-id. The wallet's idempotency store returns the
    cached result and never double-broadcasts:
@@ -245,6 +298,72 @@ The swap **router** (e.g. `0x3bFA...` for Uniswap V3 on Sepolia) must be in
 `error: policy_block, code: swap-router-not-in-contract-allowlist`, the user
 needs to add it in their terminal — you cannot modify the policy file.
 
+## Uniswap V3 LP (Phase 2)
+
+```sh
+# Read-only: list NFPM positions for an account, with in-range status + current pool tick
+wallet lp positions --account main | jq '.data.positions[] | {id:.token_id, pair, in_range, tick_lower, tick_upper, current_tick, sqrt:.sqrt_price_x96}'
+
+# Mint a new position
+# Required: --fee (100/500/3000/10000), --tick-lower/--tick-upper aligned to the
+# fee tier's spacing (100→1, 500→10, 3000→60, 10000→200), --amount-a / --amount-b.
+wallet lp mint USDC WETH --fee 500 --tick-lower 187500 --tick-upper 187650 \
+  --amount-a 10 --amount-b 0.00145 --slippage-bps 500 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+
+# Add to existing position (token pair order normalized automatically)
+wallet lp increase <token_id> USDC WETH --amount-a 5 --amount-b 0.00075 \
+  --slippage-bps 500 --broadcast --yes --wait --request-id "$(uuidgen)"
+
+# Burn liquidity (does NOT collect — feeds tokens into tokens_owed0/1)
+wallet lp remove <token_id> --percent 100 --slippage-bps 500 \
+  --broadcast --yes --wait --request-id "$(uuidgen)"
+
+# Sweep owed amounts (post-remove and accrued fees) to recipient (default: sender)
+wallet lp collect <token_id> --broadcast --yes --wait --request-id "$(uuidgen)"
+```
+
+The NFPM contract (`0x1238…cDA52` on Sepolia) and each target pool must be
+in policy:
+- `policy.contract_allowlist` must include the NFPM address
+- `policy.lp_pool_allowlist` must include an `{token0, token1, fee}` object
+  (lowercased hex, `token0 < token1`) for every pool you mint/increase against.
+  String entries are silently dropped — the schema is strict.
+
+### `lp mint` revert with expected-amounts enrichment
+
+The dominant `lp mint` failure mode is `Price slippage check`: your
+`(amount-a, amount-b)` ratio doesn't match the pool's current ratio at
+`current_tick`, so the binding side under-fills and `amount_min`
+fails. The wallet enriches that revert with the actual `(amount0,
+amount1)` Uniswap would have pulled — branch on the new fields
+instead of computing sqrt math:
+
+```jsonc
+{
+  "ok": false,
+  "code": "simulation_reverted",
+  "data": {
+    "lp_pool_address": "0x3289680d…",
+    "lp_current_tick": 187535,
+    "lp_binding_side": "token0",
+    "lp_amount0_desired_wei": "10000000",
+    "lp_amount1_desired_wei": "5000000000000000",
+    "lp_amount0_expected_wei": "9999999",
+    "lp_amount1_expected_wei": "435422385813452",
+    "suggestion": "at tick 187535 the binding side is token0; reduce --amount-b to ~0.000435422385813452 WETH (or widen the tick range)"
+  }
+}
+```
+
+Use `data.suggestion` verbatim — it tells you which CLI flag to lower
+and to what. The `lp_amount{0,1}_expected_wei` are decimals-applied raw
+wei, ready to feed back via `parse_units`. `slippage-bps` in the wallet
+is interpreted as `amount_min = desired * (1 - slip)`, **not** a
+price-band tolerance — so if `desired_a / desired_b` deviates from
+pool ratio by more than `slip/10000`, you need to reduce desired on
+the over-funded side rather than raising slippage.
+
 ## When the wallet rejects you
 
 Common policy errors and how to react:
@@ -262,6 +381,7 @@ Common policy errors and how to react:
 | `insufficient_allowance` | ERC-20 not approved for the swap router yet | Run the `suggested_command` from envelope.data, then retry |
 | `insufficient_funds` | Sender balance < value + gas fee | Reduce the amount, or fund the account; never retry with the same amount |
 | `superseded` | `tx cancel/replace` race — original landed first | Benign; the operation already settled on chain. No retry needed |
+| `tx_reverted` | `--wait` saw the tx revert on-chain (exit 5) | Broadcast succeeded but execution failed. Surface `data.wait.{block_number,gas_used}` + the explorer URL; do not auto-retry (revert reason is on-chain, retrying same params reverts the same way) |
 | `first-send-blocked-for-agent` | Recipient never seen before | Ask user to confirm the address and add to book or watch |
 | `missing-request-id-for-agent` | You forgot `--request-id` | Generate a fresh uuid and retry |
 | `idempotency-mismatch` | You reused a request-id for different params | Generate a fresh uuid; never reuse |
@@ -286,3 +406,85 @@ The wallet treats you as a **constrained signing delegate**:
 If the user asks you to do something the policy blocks, your job is to
 explain that to the user and suggest the legitimate path (TTY edit / wait /
 adjust amount). Do not try to circumvent.
+
+## Sepolia DeFi smoke test — worked recipe
+
+When the user asks you to "re-run the full DeFi surface on Sepolia" (or
+similar), use this sequence as the skeleton. Every broadcast uses
+`--wait` so you read confirmed state, not stale mempool. `RID()` is a
+shorthand for `--request-id "$(uuidgen)"`.
+
+```sh
+export WALLET_JSON=1
+export WALLET_WAIT_TIMEOUT=60
+
+# 1. Read-only smoke (no signing)
+wallet account list                                       | jq -r '.data.accounts[].name'
+wallet portfolio --account main                           | jq '.data.accounts[0].balances'
+wallet aave positions --account main                      | jq '.data.summary'
+wallet lp positions --account main                        | jq '.data.positions | length'
+wallet policy show                                        | jq '.data.policy.recipient_allowlist'
+
+# 2. Native send (proves signing + broadcast + wait)
+wallet send 0xFb0bD07524C7FBaa947CA4f7BBa445F9a749d126 0.001 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+
+# 3. Swap (USDC ↔ WETH, requires allowance to router first)
+wallet approve set USDC 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E 10 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet swap USDC WETH 10 --via uniswap-v3 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+
+# 4. Aave full cycle on LINK (Sepolia stablecoin caps are saturated — see step 0)
+#    Step 0: check the cap first
+wallet aave rates | jq '.data.rates[] | select(.symbol=="LINK") | .supply_cap_used_pct'
+wallet aave faucet LINK 50 --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+# approve uses Aave's mock LINK automatically because spender is the aave_v3 pool
+wallet approve set LINK 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951 50 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet aave supply LINK 50 --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet aave borrow LINK 1 --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+# repay --max needs the borrowed token's balance to cover (debt + accrued interest);
+# faucet a small buffer first so testnet's high borrow APR doesn't underflow
+wallet aave faucet LINK 0.5 --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet approve set LINK 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951 2 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet aave repay LINK --max --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet aave withdraw LINK --max --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+
+# 5. LP mint / increase / remove / collect on USDC/WETH 0.05%
+#    Read current tick first so the range straddles it
+CUR_TICK=$(wallet lp positions --account main | jq -r '.data.positions[0].current_tick')
+echo "current tick = $CUR_TICK; use [CUR_TICK-75, CUR_TICK+75] aligned to spacing 10"
+# Approvals to NFPM
+wallet approve set USDC 0x1238536071E1c677A632429e3655c799b22cDA52 50 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet approve set WETH 0x1238536071E1c677A632429e3655c799b22cDA52 0.01 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+# Mint — if it reverts with Price slippage check, read data.suggestion and retry
+wallet lp mint USDC WETH --fee 500 --tick-lower <CUR-75> --tick-upper <CUR+75> \
+  --amount-a 10 --amount-b 0.00145 --slippage-bps 500 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+TOKEN_ID=$(wallet lp positions --account main | jq -r '.data.positions[-1].token_id')
+wallet lp increase $TOKEN_ID USDC WETH --amount-a 5 --amount-b 0.00075 --slippage-bps 500 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet lp remove $TOKEN_ID --percent 100 --slippage-bps 500 \
+  --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+wallet lp collect $TOKEN_ID --account main --broadcast --yes --wait --request-id "$(uuidgen)"
+```
+
+Branch hygiene during the run:
+
+- After each broadcast, check `.data.wait.status == "success"` before
+  moving on. If `"reverted"`, stop and surface the explorer URL.
+- For Aave: if `aave rates` shows `supply_cap_used_pct >= 100` for the
+  target reserve, switch reserves rather than catching the
+  `SUPPLY_CAP_EXCEEDED` revert. Stablecoins on Sepolia are over-cap;
+  LINK / WBTC / WETH / AAVE / EURS have null cap.
+- For LP: if `lp mint` reverts with `Price slippage check`, read
+  `data.lp_amount{0,1}_expected_wei` and `data.suggestion` — both tell
+  you the exact retry command without needing sqrt math.
+- For all approves: use the symbol form (`USDC`, `WETH`, `LINK`); the
+  wallet picks the correct underlying when the spender is the Aave
+  pool. Never hard-code mock token addresses in agent code — they
+  change between Aave testnet redeployments.
