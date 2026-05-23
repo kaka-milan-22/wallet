@@ -10,6 +10,7 @@ from wallet.core.config import ChainConfig
 from wallet.protocols.aave import (
     AaveReserve,
     base_to_usd,
+    cap_utilization_pct,
     get_account_summary,
     get_all_rates,
     get_all_reserves,
@@ -185,30 +186,74 @@ def test_user_positions_captures_borrow():
 # --- get_all_rates -----------------------------------------------------------
 
 
-def test_all_rates_parses_ray_indices():
+def test_all_rates_parses_ray_indices_and_caps():
     reserves = [AaveReserve(symbol="USDC", asset_address=USDC_RESERVE[1], decimals=6)]
 
     dp = MagicMock()
-    # getReserveData returns 12 fields; we read index 5 (liquidityRate)
-    # and index 6 (variableBorrowRate).
+
+    # getReserveData: 12 fields. idx 2 = totalAToken, 4 = totalVariableDebt,
+    # 5 = liquidityRate, 6 = variableBorrowRate.
     def rd_fn(asset):
         return MagicMock(call=lambda: [
-            0, 0, 0, 0, 0,
-            5 * 10**25,  # supply APR = 5%
-            8 * 10**25,  # variable borrow APR = 8%
+            0,                  # unbacked
+            0,                  # accruedToTreasuryScaled
+            8_500_000 * 10**6,  # totalAToken: 8.5M USDC supplied
+            0,                  # totalStableDebt
+            3_000_000 * 10**6,  # totalVariableDebt: 3M USDC borrowed
+            5 * 10**25,         # supply APR = 5%
+            8 * 10**25,         # variable borrow APR = 8%
             0, 0, 0, 0, 0,
         ])
+
+    # getReserveCaps: (borrowCap, supplyCap) — whole tokens, NOT decimals-adjusted.
+    def caps_fn(asset):
+        return MagicMock(call=lambda: [
+            5_000_000,   # borrow cap = 5M USDC
+            10_000_000,  # supply cap = 10M USDC
+        ])
+
     dp.functions.getReserveData.side_effect = rd_fn
+    dp.functions.getReserveCaps.side_effect = caps_fn
 
     w3 = MagicMock()
     w3.eth.contract.return_value = dp
 
     rates = get_all_rates(w3, CHAIN, reserves=reserves)
     assert len(rates) == 1
-    assert rates[0].supply_apr_ray == 5 * 10**25
-    assert rates[0].variable_borrow_apr_ray == 8 * 10**25
-    assert ray_to_pct(rates[0].supply_apr_ray) == "5.00"
-    assert ray_to_pct(rates[0].variable_borrow_apr_ray) == "8.00"
+    r = rates[0]
+    assert r.supply_apr_ray == 5 * 10**25
+    assert r.variable_borrow_apr_ray == 8 * 10**25
+    assert r.total_a_token_wei == 8_500_000 * 10**6
+    assert r.total_variable_debt_wei == 3_000_000 * 10**6
+    assert r.supply_cap_whole == 10_000_000
+    assert r.borrow_cap_whole == 5_000_000
+    assert ray_to_pct(r.supply_apr_ray) == "5.00"
+    assert ray_to_pct(r.variable_borrow_apr_ray) == "8.00"
+    # 8.5M used / 10M cap = 85.00%
+    assert cap_utilization_pct(r.total_a_token_wei, r.supply_cap_whole, 6) == "85.00"
+    # 3M used / 5M cap = 60.00%
+    assert cap_utilization_pct(r.total_variable_debt_wei, r.borrow_cap_whole, 6) == "60.00"
+
+
+def test_all_rates_unlimited_cap_returns_null_pct():
+    """Aave V3 convention: cap_whole == 0 means no cap configured. The CLI
+    layer relies on `cap_utilization_pct(..., 0, ...)` being None so the
+    `supply_cap` / `supply_cap_used_pct` JSON fields are null together."""
+    assert cap_utilization_pct(1_000_000 * 10**18, 0, 18) is None
+    assert cap_utilization_pct(0, 0, 6) is None
+
+
+def test_cap_utilization_pct_decimals_quirk():
+    """The footgun this helper hides: `used_wei` is decimals-applied
+    (1 USDC = 1_000_000) but `cap_whole` is **integer tokens** (1 USDC = 1).
+    A naive `used / cap * 100` without the 10**decimals reconciliation
+    would over-report cap usage by a factor of 10**6 for USDC."""
+    # 50 USDC used, 100 USDC cap → 50%
+    assert cap_utilization_pct(50 * 10**6, 100, 6) == "50.00"
+    # 1.5 WETH used, 10 WETH cap → 15%
+    assert cap_utilization_pct(15 * 10**17, 10, 18) == "15.00"
+    # 200 WBTC used, 100 WBTC cap → 200% (over-cap; helper does not clamp)
+    assert cap_utilization_pct(200 * 10**8, 100, 8) == "200.00"
 
 
 def test_all_rates_empty_reserves_returns_empty():

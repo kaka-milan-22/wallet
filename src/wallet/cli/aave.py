@@ -17,6 +17,7 @@ from wallet.protocols.aave import (
     REPAY_MAX_AMOUNT,
     WITHDRAW_MAX_AMOUNT,
     base_to_usd,
+    cap_utilization_pct,
     get_account_summary,
     get_all_rates,
     get_all_reserves,
@@ -243,18 +244,30 @@ def rates(
             raise typer.Exit(code=2)
 
     all_rates = get_all_rates(w3, cfg, reserves=reserves)
-    rates_data = [
-        {
+    rates_data = []
+    for r in all_rates:
+        dec = r.reserve.decimals
+        sup_cap_whole = r.supply_cap_whole
+        bor_cap_whole = r.borrow_cap_whole
+        rates_data.append({
             "symbol": r.reserve.symbol,
             "asset_address": r.reserve.asset_address,
-            "decimals": r.reserve.decimals,
+            "decimals": dec,
             "supply_apr_ray": str(r.supply_apr_ray),
             "supply_apr_pct": ray_to_pct(r.supply_apr_ray),
             "variable_borrow_apr_ray": str(r.variable_borrow_apr_ray),
             "variable_borrow_apr_pct": ray_to_pct(r.variable_borrow_apr_ray),
-        }
-        for r in all_rates
-    ]
+            "supply_used_wei": str(r.total_a_token_wei),
+            "supply_used": format_units(r.total_a_token_wei, dec),
+            "supply_cap": str(sup_cap_whole) if sup_cap_whole else None,
+            "supply_cap_wei": str(sup_cap_whole * 10**dec) if sup_cap_whole else None,
+            "supply_cap_used_pct": cap_utilization_pct(r.total_a_token_wei, sup_cap_whole, dec),
+            "borrow_used_wei": str(r.total_variable_debt_wei),
+            "borrow_used": format_units(r.total_variable_debt_wei, dec),
+            "borrow_cap": str(bor_cap_whole) if bor_cap_whole else None,
+            "borrow_cap_wei": str(bor_cap_whole * 10**dec) if bor_cap_whole else None,
+            "borrow_cap_used_pct": cap_utilization_pct(r.total_variable_debt_wei, bor_cap_whole, dec),
+        })
 
     data = {
         "ok": True,
@@ -269,12 +282,14 @@ def rates(
         t.add_column("symbol")
         t.add_column("supply APR", justify="right", style="green")
         t.add_column("borrow APR", justify="right", style="red")
+        t.add_column("supply cap %", justify="right", style="yellow")
         t.add_column("asset", style="dim")
         for row in d["data"]["rates"]:
             t.add_row(
                 row["symbol"],
                 f"{row['supply_apr_pct']}%",
                 f"{row['variable_borrow_apr_pct']}%",
+                f"{row['supply_cap_used_pct']}%" if row["supply_cap_used_pct"] is not None else "-",
                 row["asset_address"],
             )
         stdout_console().print(t)

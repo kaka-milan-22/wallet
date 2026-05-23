@@ -43,6 +43,16 @@ class AaveReserveRates:
     reserve: AaveReserve
     supply_apr_ray: int  # liquidityRate from getReserveData
     variable_borrow_apr_ray: int  # variableBorrowRate from getReserveData
+    # `total_*_wei` are decimals-applied raw on-chain integers (e.g. for USDC
+    # 1 USDC = 1_000_000). `*_cap_whole` are **integer token counts** —
+    # Aave V3 stores caps as whole tokens, NOT decimals-adjusted; an
+    # explicit `cap_whole * 10**decimals = cap_wei` is the only safe way
+    # to compare against `total_*_wei`. Cap == 0 means "unlimited" by Aave
+    # convention (no cap configured for that reserve).
+    total_a_token_wei: int = 0  # getReserveData[2]
+    total_variable_debt_wei: int = 0  # getReserveData[4]
+    supply_cap_whole: int = 0  # getReserveCaps[1]
+    borrow_cap_whole: int = 0  # getReserveCaps[0]
 
 
 @dataclass(frozen=True)
@@ -223,6 +233,16 @@ AAVE_DATA_PROVIDER_ABI = [
         ],
     },
     {
+        "name": "getReserveCaps",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [{"name": "asset", "type": "address"}],
+        "outputs": [
+            {"name": "borrowCap", "type": "uint256"},
+            {"name": "supplyCap", "type": "uint256"},
+        ],
+    },
+    {
         "name": "getUserReserveData",
         "type": "function",
         "stateMutability": "view",
@@ -339,7 +359,13 @@ def get_user_positions(
 def get_all_rates(
     w3, chain: ChainConfig, reserves: list[AaveReserve] | None = None
 ) -> list[AaveReserveRates]:
-    """Fan out `getReserveData` to read per-reserve APRs in ray."""
+    """Fan out `getReserveData` + `getReserveCaps` per reserve.
+
+    Two sequential RPCs per worker, parallel across reserves — the dual
+    call lets a single `aave rates` invocation surface both APRs and
+    supply/borrow caps so callers can predict `SUPPLY_CAP_EXCEEDED`
+    before broadcast instead of catching it as a simulation revert.
+    """
     if reserves is None:
         reserves = get_all_reserves(w3, chain)
     if not reserves:
@@ -348,11 +374,16 @@ def get_all_rates(
     dp = _data_provider(w3, chain)
 
     def fetch(reserve: AaveReserve):
-        result = dp.functions.getReserveData(reserve.asset_address).call()
+        rd = dp.functions.getReserveData(reserve.asset_address).call()
+        caps = dp.functions.getReserveCaps(reserve.asset_address).call()
         return AaveReserveRates(
             reserve=reserve,
-            supply_apr_ray=int(result[5]),         # liquidityRate
-            variable_borrow_apr_ray=int(result[6]),  # variableBorrowRate
+            supply_apr_ray=int(rd[5]),              # liquidityRate
+            variable_borrow_apr_ray=int(rd[6]),     # variableBorrowRate
+            total_a_token_wei=int(rd[2]),           # totalAToken
+            total_variable_debt_wei=int(rd[4]),     # totalVariableDebt
+            borrow_cap_whole=int(caps[0]),
+            supply_cap_whole=int(caps[1]),
         )
 
     with ThreadPoolExecutor(max_workers=min(10, len(reserves))) as pool:
@@ -369,6 +400,21 @@ def ray_to_pct(rate_ray: int) -> str:
     # rate / 1e27 is the annual rate as a fraction; *100 → percent.
     pct = rate_ray / 10**25
     return f"{pct:.2f}"
+
+
+def cap_utilization_pct(used_wei: int, cap_whole: int, decimals: int) -> str | None:
+    """% of an Aave V3 supply/borrow cap currently consumed.
+
+    `used_wei` is the on-chain raw amount (decimals-applied); `cap_whole`
+    is Aave's whole-token cap. Returns `None` when `cap_whole == 0`
+    (Aave convention: no cap configured → unlimited). The two units
+    don't match without the `* 10**decimals` reconciliation here, which
+    is exactly the footgun this helper exists to hide from callers.
+    """
+    if cap_whole == 0:
+        return None
+    used_whole = used_wei / 10**decimals
+    return f"{used_whole / cap_whole * 100:.2f}"
 
 
 def base_to_usd(base_wei: int) -> str:
