@@ -241,3 +241,56 @@ def get_amounts_for_liquidity(
             get_amount1_for_liquidity(a, sqrt_ratio_current_x96, liquidity),
         )
     return (0, get_amount1_for_liquidity(a, b, liquidity))
+
+
+# --- inverse: given desired amounts, derive liquidity ----------------------
+# Port of v3-periphery `LiquidityAmounts.getLiquidityForAmount{0,1,s}`.
+# Used by `lp mint` preview/error paths to surface "given your tick range
+# and current pool price, the actual `(amount0, amount1)` Uniswap will
+# pull is X" — so an agent can see why `Price slippage check` reverted
+# without having to compute sqrt math itself.
+
+
+def get_liquidity_for_amount0(
+    sqrt_ratio_a_x96: int, sqrt_ratio_b_x96: int, amount0: int
+) -> int:
+    """Maximum liquidity that can be backed by `amount0` between two sqrt prices."""
+    a, b = _ordered(sqrt_ratio_a_x96, sqrt_ratio_b_x96)
+    if a == b or amount0 <= 0:
+        return 0
+    intermediate = (a * b) >> 96
+    return (amount0 * intermediate) // (b - a)
+
+
+def get_liquidity_for_amount1(
+    sqrt_ratio_a_x96: int, sqrt_ratio_b_x96: int, amount1: int
+) -> int:
+    """Maximum liquidity that can be backed by `amount1` between two sqrt prices."""
+    a, b = _ordered(sqrt_ratio_a_x96, sqrt_ratio_b_x96)
+    if a == b or amount1 <= 0:
+        return 0
+    return (amount1 << 96) // (b - a)
+
+
+def get_liquidity_for_amounts(
+    sqrt_ratio_current_x96: int,
+    sqrt_ratio_a_x96: int,
+    sqrt_ratio_b_x96: int,
+    amount0: int,
+    amount1: int,
+) -> int:
+    """L derivable from `(amount0, amount1)` desired — the binding side wins.
+
+    Mirrors the three regimes of `get_amounts_for_liquidity`. Inside the
+    range both sides constrain; the smaller of the two derived L wins.
+    Outside the range only one side contributes (price below → only
+    amount0 matters; above → only amount1).
+    """
+    a, b = _ordered(sqrt_ratio_a_x96, sqrt_ratio_b_x96)
+    if sqrt_ratio_current_x96 <= a:
+        return get_liquidity_for_amount0(a, b, amount0)
+    if sqrt_ratio_current_x96 < b:
+        liq0 = get_liquidity_for_amount0(sqrt_ratio_current_x96, b, amount0)
+        liq1 = get_liquidity_for_amount1(a, sqrt_ratio_current_x96, amount1)
+        return min(liq0, liq1)
+    return get_liquidity_for_amount1(a, b, amount1)

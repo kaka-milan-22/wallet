@@ -24,6 +24,7 @@ from wallet.core.config import get_chain
 from wallet.core.rpc import format_units, parse_units
 from wallet.core.tokens import InsufficientAllowance
 from wallet.protocols.uniswap_v3_lp import (
+    compute_mint_expected_amounts,
     get_positions,
     prepare_collect,
     prepare_decrease_liquidity,
@@ -342,17 +343,29 @@ def mint(
         )
         raise typer.Exit(code=2)
     except _ContractLogicError as e:
+        revert_msg = _format_revert(e)
+        error_data = _maybe_expected_amounts_for_mint(
+            w3, cfg, ti_a, amt_a_wei, ti_b, amt_b_wei, fee, tick_lower, tick_upper,
+            revert_msg=revert_msg,
+        )
         emit_error(
             "simulation_reverted",
             command="lp.mint", chain=cfg.name,
-            reason=_format_revert(e),
+            reason=revert_msg,
+            data=error_data,
         )
         raise typer.Exit(code=3)
     except RuntimeError as e:
+        msg = str(e)
+        error_data = _maybe_expected_amounts_for_mint(
+            w3, cfg, ti_a, amt_a_wei, ti_b, amt_b_wei, fee, tick_lower, tick_upper,
+            revert_msg=msg,
+        )
         emit_error(
             "simulation_reverted",
             command="lp.mint", chain=cfg.name,
-            reason=str(e),
+            reason=msg,
+            data=error_data,
         )
         raise typer.Exit(code=3)
     except ValueError as e:
@@ -365,6 +378,42 @@ def mint(
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
     )
+
+
+def _maybe_expected_amounts_for_mint(
+    w3, cfg, ti_a, amt_a_wei, ti_b, amt_b_wei, fee, tick_lower, tick_upper,
+    *, revert_msg: str,
+) -> dict | None:
+    """Compute and return expected `(amount0, amount1)` if the revert looks
+    like a slippage / amount-ratio mismatch — the dominant failure mode
+    when an agent picks desired amounts that don't match the pool's
+    current ratio. Anything else (no pool, RPC error in the helper, etc.)
+    falls back to the bare revert reason without enrichment."""
+    triggers = ("Price slippage check", "STF", "amount0Min", "amount1Min")
+    if not any(t in revert_msg for t in triggers):
+        return None
+    try:
+        expected = compute_mint_expected_amounts(
+            w3, cfg, ti_a, amt_a_wei, ti_b, amt_b_wei,
+            fee=fee, tick_lower=tick_lower, tick_upper=tick_upper,
+        )
+    except Exception:
+        return None
+    # Map the binding token0/token1 back to the user-facing --amount-a or
+    # --amount-b flag they passed. token_a is `--amount-a` by definition.
+    bound = expected["lp_binding_side"]
+    other = "token1" if bound == "token0" else "token0"
+    other_expected_wei = int(expected[f"lp_amount{'0' if other == 'token0' else '1'}_expected_wei"])
+    other_decimals = expected[f"lp_{other}_decimals"]
+    other_sym = expected[f"lp_{other}_symbol"]
+    other_addr = expected[f"lp_{other}_address"].lower()
+    other_flag = "--amount-a" if ti_a.address.lower() == other_addr else "--amount-b"
+    expected["suggestion"] = (
+        f"at tick {expected['lp_current_tick']} the binding side is {bound}; "
+        f"reduce {other_flag} to ~{format_units(other_expected_wei, other_decimals)} "
+        f"{other_sym} (or widen the tick range)"
+    )
+    return expected
 
 
 @app.command("increase")

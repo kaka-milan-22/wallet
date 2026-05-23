@@ -34,6 +34,7 @@ from wallet.core.uniswap_v3_math import (
     MAX_UINT128,
     align_to_tick_spacing,
     get_amounts_for_liquidity,
+    get_liquidity_for_amounts,
     get_sqrt_ratio_at_tick,
     get_tick_at_sqrt_ratio,
     tick_spacing_for_fee,
@@ -778,3 +779,90 @@ def slot0_in_range(sqrt_price_x96: int, tick_lower: int, tick_upper: int) -> boo
     """Same predicate using sqrtPriceX96 instead of a chain-reported tick."""
     current = get_tick_at_sqrt_ratio(sqrt_price_x96)
     return is_in_range(current, tick_lower, tick_upper)
+
+
+def compute_mint_expected_amounts(
+    w3,
+    chain: ChainConfig,
+    token_a: TokenInfo,
+    amount_a_desired_wei: int,
+    token_b: TokenInfo,
+    amount_b_desired_wei: int,
+    fee: int,
+    tick_lower: int,
+    tick_upper: int,
+) -> dict:
+    """Given a desired mint and the pool's current price, return the
+    `(amount0, amount1)` Uniswap V3 will actually pull.
+
+    Used by `lp mint`'s error path to enrich `Price slippage check`
+    reverts: the agent can read `expected_amount{0,1}_wei` and retry with
+    those, instead of guessing the binding side from sqrtPriceX96 math.
+
+    Returns a flat dict so the CLI can spread it into the error envelope's
+    `data` field. Keys mirror the rest of the lp.* envelope vocabulary
+    (`lp_amount0_*` etc.) so callers parse uniformly.
+    """
+    token0, amount0_desired, token1, amount1_desired = _sort_token_pair(
+        token_a, amount_a_desired_wei, token_b, amount_b_desired_wei
+    )
+
+    factory = _factory(w3, chain)
+    pool_addr = factory.functions.getPool(
+        Web3.to_checksum_address(token0.address),
+        Web3.to_checksum_address(token1.address),
+        int(fee),
+    ).call()
+    if int(pool_addr, 16) == 0:
+        raise ValueError(
+            f"no Uniswap V3 pool for {token0.symbol}/{token1.symbol} fee={fee}"
+        )
+
+    pool = _pool(w3, pool_addr)
+    slot0 = pool.functions.slot0().call()
+    sqrt_current = int(slot0[0])
+    current_tick = int(slot0[1])
+
+    sqrt_a = get_sqrt_ratio_at_tick(int(tick_lower))
+    sqrt_b = get_sqrt_ratio_at_tick(int(tick_upper))
+
+    liquidity = get_liquidity_for_amounts(
+        sqrt_current, sqrt_a, sqrt_b, int(amount0_desired), int(amount1_desired)
+    )
+    expected0, expected1 = get_amounts_for_liquidity(
+        sqrt_current, sqrt_a, sqrt_b, liquidity
+    )
+
+    # Identify which side binds. Inside the range the smaller of the two
+    # liquidity-from-amount values is the constraint; the other side will
+    # be under-consumed (actual < desired). Outside the range only one
+    # side matters (price below → only token0; above → only token1).
+    if sqrt_current <= sqrt_a:
+        binding = "token0"  # all token0
+    elif sqrt_current >= sqrt_b:
+        binding = "token1"  # all token1
+    else:
+        from wallet.core.uniswap_v3_math import (
+            get_liquidity_for_amount0,
+            get_liquidity_for_amount1,
+        )
+        liq0 = get_liquidity_for_amount0(sqrt_current, sqrt_b, int(amount0_desired))
+        liq1 = get_liquidity_for_amount1(sqrt_a, sqrt_current, int(amount1_desired))
+        binding = "token0" if liq0 <= liq1 else "token1"
+
+    return {
+        "lp_pool_address": Web3.to_checksum_address(pool_addr),
+        "lp_current_sqrt_price_x96": str(sqrt_current),
+        "lp_current_tick": current_tick,
+        "lp_token0_symbol": token0.symbol,
+        "lp_token0_address": Web3.to_checksum_address(token0.address),
+        "lp_token0_decimals": token0.decimals,
+        "lp_token1_symbol": token1.symbol,
+        "lp_token1_address": Web3.to_checksum_address(token1.address),
+        "lp_token1_decimals": token1.decimals,
+        "lp_amount0_desired_wei": str(int(amount0_desired)),
+        "lp_amount1_desired_wei": str(int(amount1_desired)),
+        "lp_amount0_expected_wei": str(int(expected0)),
+        "lp_amount1_expected_wei": str(int(expected1)),
+        "lp_binding_side": binding,
+    }

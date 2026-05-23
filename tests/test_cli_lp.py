@@ -344,3 +344,94 @@ def test_collect_policy_block_when_nfpm_missing_from_allowlist(
     env = json.loads(r.output.strip().splitlines()[-1])
     assert env["error"] == "policy_block"
     assert "lp-nfpm-not-in-contract-allowlist" in env["reason"]
+
+
+# --- lp mint slippage-revert enrichment -------------------------------------
+
+
+def test_mint_slippage_revert_surfaces_expected_amounts(monkeypatch, tmp_path: Path):
+    """When prepare_mint reverts with `Price slippage check` (the dominant
+    failure mode when the agent's amount_a / amount_b don't match the
+    pool's current ratio), the error envelope must include expected
+    `(amount0, amount1)` and a suggestion pointing at the binding side."""
+    from web3.exceptions import ContractLogicError
+
+    spec = _MockSpec()
+    _install_mock(monkeypatch, tmp_path, spec)
+
+    def raise_slippage(*a, **kw):
+        raise ContractLogicError("execution reverted: Price slippage check")
+
+    monkeypatch.setattr("wallet.cli.lp.prepare_mint", raise_slippage)
+    monkeypatch.setattr(
+        "wallet.cli.lp.compute_mint_expected_amounts",
+        lambda *a, **kw: {
+            "lp_pool_address": "0x" + "5" * 40,
+            "lp_current_sqrt_price_x96": "12345",
+            "lp_current_tick": 187575,
+            "lp_token0_symbol": "USDC",
+            "lp_token0_address": USDC_ADDR,
+            "lp_token0_decimals": 6,
+            "lp_token1_symbol": "WETH",
+            "lp_token1_address": WETH_ADDR,
+            "lp_token1_decimals": 18,
+            "lp_amount0_desired_wei": "10000000",
+            "lp_amount1_desired_wei": "1600000000000000",
+            "lp_amount0_expected_wei": "10000000",
+            "lp_amount1_expected_wei": "1413000000000000",
+            "lp_binding_side": "token0",
+        },
+    )
+
+    r = CliRunner().invoke(app, [
+        "--json", "lp", "mint", "USDC", "WETH",
+        "--fee", "500", "--tick-lower", "187500", "--tick-upper", "187650",
+        "--amount-a", "10", "--amount-b", "0.0016",
+        "--slippage-bps", "200",
+    ])
+    assert r.exit_code == 3
+    env = json.loads(r.output.strip().splitlines()[-1])
+    assert env["error"] == "simulation_reverted"
+    assert "Price slippage check" in env["reason"]
+    d = env["data"]
+    assert d["lp_amount0_expected_wei"] == "10000000"
+    assert d["lp_amount1_expected_wei"] == "1413000000000000"
+    assert d["lp_binding_side"] == "token0"
+    assert d["lp_current_tick"] == 187575
+    # token_a=USDC=token0 → over-funded side is token1=WETH → user adjusts --amount-b
+    assert "--amount-b" in d["suggestion"]
+    assert "WETH" in d["suggestion"]
+
+
+def test_mint_non_slippage_revert_skips_enrichment(monkeypatch, tmp_path: Path):
+    """Non-slippage reverts (e.g. pool doesn't exist) should NOT call the
+    expensive expected-amount math — we'd just waste an RPC round-trip."""
+    from web3.exceptions import ContractLogicError
+
+    spec = _MockSpec()
+    _install_mock(monkeypatch, tmp_path, spec)
+
+    monkeypatch.setattr(
+        "wallet.cli.lp.prepare_mint",
+        lambda *a, **kw: (_ for _ in ()).throw(ContractLogicError("execution reverted: PoolNotInitialized")),
+    )
+
+    called = {"hit": False}
+
+    def must_not_be_called(*a, **kw):
+        called["hit"] = True
+        raise AssertionError("expected-amount helper must not run for non-slippage reverts")
+
+    monkeypatch.setattr("wallet.cli.lp.compute_mint_expected_amounts", must_not_be_called)
+
+    r = CliRunner().invoke(app, [
+        "--json", "lp", "mint", "USDC", "WETH",
+        "--fee", "500", "--tick-lower", "187500", "--tick-upper", "187650",
+        "--amount-a", "10", "--amount-b", "0.0016",
+    ])
+    assert r.exit_code == 3
+    assert called["hit"] is False
+    env = json.loads(r.output.strip().splitlines()[-1])
+    assert env["error"] == "simulation_reverted"
+    assert "PoolNotInitialized" in env["reason"]
+    assert env.get("data") is None or "lp_amount0_expected_wei" not in env["data"]

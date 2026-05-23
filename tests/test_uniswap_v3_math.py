@@ -22,6 +22,9 @@ from wallet.core.uniswap_v3_math import (
     get_amount0_for_liquidity,
     get_amount1_for_liquidity,
     get_amounts_for_liquidity,
+    get_liquidity_for_amount0,
+    get_liquidity_for_amount1,
+    get_liquidity_for_amounts,
     get_sqrt_ratio_at_tick,
     get_tick_at_sqrt_ratio,
     tick_spacing_for_fee,
@@ -202,3 +205,66 @@ def test_fee_tier_tick_spacing_table_matches_protocol():
     # Lock the table — if Uniswap governance adds a new fee tier we want a
     # failing test forcing an explicit update rather than silent drift.
     assert FEE_TIER_TICK_SPACING == {100: 1, 500: 10, 3000: 60, 10000: 200}
+
+
+# --- inverse: get_liquidity_for_amounts ------------------------------------
+
+
+def test_get_liquidity_round_trips_through_amounts():
+    """L → (amount0, amount1) → L should round-trip with negligible loss.
+
+    Integer division rounds down at every mulDiv step in the on-chain
+    Solidity, so this is never bit-exact — the binding side loses a few
+    units per integer truncation. Anything within 1 ppm of the input is
+    "correct" by Uniswap V3 standards (they ship the same error budget)."""
+    sqrt_a = get_sqrt_ratio_at_tick(-60)
+    sqrt_b = get_sqrt_ratio_at_tick(60)
+    current = get_sqrt_ratio_at_tick(0)
+    L = 10**18
+    amt0, amt1 = get_amounts_for_liquidity(current, sqrt_a, sqrt_b, L)
+    L_back = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, amt0, amt1)
+    # 1 ppm relative tolerance — observed drift is ~314 wei in 10**18.
+    assert abs(L_back - L) <= L // 10**6
+
+
+def test_get_liquidity_below_range_uses_amount0_only():
+    """Price below range: only token0 contributes; amount1 is ignored."""
+    sqrt_a = get_sqrt_ratio_at_tick(60)
+    sqrt_b = get_sqrt_ratio_at_tick(120)
+    current = get_sqrt_ratio_at_tick(0)  # below range
+    L = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, 10**18, 0)
+    assert L > 0
+    # Passing nonsense amount1 must not change the result.
+    L_with_amt1 = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, 10**18, 10**30)
+    assert L_with_amt1 == L
+
+
+def test_get_liquidity_above_range_uses_amount1_only():
+    sqrt_a = get_sqrt_ratio_at_tick(-120)
+    sqrt_b = get_sqrt_ratio_at_tick(-60)
+    current = get_sqrt_ratio_at_tick(0)  # above range
+    L = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, 0, 10**18)
+    assert L > 0
+    L_with_amt0 = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, 10**30, 10**18)
+    assert L_with_amt0 == L
+
+
+def test_get_liquidity_in_range_picks_binding_side():
+    """Inside the range, the smaller of (L_from_amount0, L_from_amount1)
+    binds — the over-funded side is consumed only proportionally."""
+    sqrt_a = get_sqrt_ratio_at_tick(-60)
+    sqrt_b = get_sqrt_ratio_at_tick(60)
+    current = get_sqrt_ratio_at_tick(0)
+    # Picks one side as binding by undersizing it.
+    L_tiny_amt0 = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, 100, 10**30)
+    L_tiny_amt1 = get_liquidity_for_amounts(current, sqrt_a, sqrt_b, 10**30, 100)
+    # Both must equal the L you'd get from the binding side alone.
+    assert L_tiny_amt0 == get_liquidity_for_amount0(current, sqrt_b, 100)
+    assert L_tiny_amt1 == get_liquidity_for_amount1(sqrt_a, current, 100)
+
+
+def test_get_liquidity_for_amount_zero_returns_zero():
+    sqrt_a = get_sqrt_ratio_at_tick(-60)
+    sqrt_b = get_sqrt_ratio_at_tick(60)
+    assert get_liquidity_for_amount0(sqrt_a, sqrt_b, 0) == 0
+    assert get_liquidity_for_amount1(sqrt_a, sqrt_b, 0) == 0
