@@ -157,11 +157,20 @@ Workflow EVERY time:
 
    - `wait.status == "success"` → exit 0, tx mined and didn't revert.
    - `wait.status == "reverted"` → envelope becomes `ok: false`,
-     `code: tx_reverted`, exit **5**. Broadcast succeeded; the tx failed
-     on-chain. Surface `wait.block_number` + `wait.gas_used` to the user
-     for debugging; do NOT auto-retry (the revert reason is on-chain,
-     not in the envelope, so retrying with the same params reverts the
-     same way).
+     `code: tx_reverted`, exit **5**. Broadcast succeeded; the tx
+     failed on-chain. Surface `wait.block_number` + `wait.gas_used` to
+     the user. Auto-retry policy depends on **what** reverted:
+     - **Deterministic** reverts (HF / cap / slippage / policy
+       violations — anything the wallet pre-flighted but the chain
+       state diverged at execution) → do NOT retry; same params will
+       fail the same way. Adjust amounts or surface to the user.
+     - **Transient** reverts (Aave pool liquidity dipped below your
+       supply during the same block, nonce race, RPC blip) → one
+       retry with a fresh `--request-id` is fine; if it reverts a
+       second time treat as deterministic. The canonical case is
+       Aave `withdraw --max` on a high-utilization reserve
+       (Sepolia LINK at 200%+ borrow demand reverts intermittently
+       with `LIQUIDITY_LESS_THAN_AVAILABLE` even when your HF=inf).
    - `wait.status == "timeout"` → envelope stays `ok: true`, exit 0,
      `tx_hash` is valid. The tx may still mine; re-query via the
      explorer or wait longer.
@@ -381,7 +390,7 @@ Common policy errors and how to react:
 | `insufficient_allowance` | ERC-20 not approved for the swap router yet | Run the `suggested_command` from envelope.data, then retry |
 | `insufficient_funds` | Sender balance < value + gas fee | Reduce the amount, or fund the account; never retry with the same amount |
 | `superseded` | `tx cancel/replace` race — original landed first | Benign; the operation already settled on chain. No retry needed |
-| `tx_reverted` | `--wait` saw the tx revert on-chain (exit 5) | Broadcast succeeded but execution failed. Surface `data.wait.{block_number,gas_used}` + the explorer URL; do not auto-retry (revert reason is on-chain, retrying same params reverts the same way) |
+| `tx_reverted` | `--wait` saw the tx revert on-chain (exit 5) | Broadcast succeeded but execution failed. Surface `data.wait.{block_number,gas_used}` + the explorer URL. Retry only when the revert is transient (Aave reserve liquidity dip, nonce race); never retry on deterministic reverts (HF / cap / slippage / policy). One retry max — second revert is deterministic by definition |
 | `first-send-blocked-for-agent` | Recipient never seen before | Ask user to confirm the address and add to book or watch |
 | `missing-request-id-for-agent` | You forgot `--request-id` | Generate a fresh uuid and retry |
 | `idempotency-mismatch` | You reused a request-id for different params | Generate a fresh uuid; never reuse |
@@ -461,11 +470,26 @@ wallet approve set USDC 0x1238536071E1c677A632429e3655c799b22cDA52 50 \
   --account main --broadcast --yes --wait --request-id "$(uuidgen)"
 wallet approve set WETH 0x1238536071E1c677A632429e3655c799b22cDA52 0.01 \
   --account main --broadcast --yes --wait --request-id "$(uuidgen)"
-# Mint — if it reverts with Price slippage check, read data.suggestion and retry
+# Mint — the recipe's amount-b is approximate; if tick has drifted it will
+# revert with `Price slippage check`. The envelope's `data.suggestion`
+# tells you exactly what to retry with, e.g.
+#   "reduce --amount-b to ~0.00109738975071465 WETH (or widen the tick range)"
+# Just re-run with that value (and a fresh request-id).
 wallet lp mint USDC WETH --fee 500 --tick-lower <CUR-75> --tick-upper <CUR+75> \
   --amount-a 10 --amount-b 0.00145 --slippage-bps 500 \
   --account main --broadcast --yes --wait --request-id "$(uuidgen)"
-TOKEN_ID=$(wallet lp positions --account main | jq -r '.data.positions[-1].token_id')
+# Find the token_id of the position we just minted. The `lp positions` list
+# order is NFT enumeration (NOT creation time) so `.positions[-1]` is wrong
+# for accounts with multiple positions. Filter on the tick range + non-zero
+# liquidity. Parens around `(.liquidity_wei | tonumber)` are REQUIRED —
+# jq otherwise tries to compare a string and errors with "Cannot index
+# string". This is the most common jq footgun in the wallet's envelopes.
+TOKEN_ID=$(wallet lp positions --account main \
+  | jq -r '.data.positions
+    | map(select((.liquidity_wei | tonumber) > 0
+                 and .tick_lower==<CUR-75>
+                 and .tick_upper==<CUR+75>))
+    | .[0].token_id')
 wallet lp increase $TOKEN_ID USDC WETH --amount-a 5 --amount-b 0.00075 --slippage-bps 500 \
   --account main --broadcast --yes --wait --request-id "$(uuidgen)"
 wallet lp remove $TOKEN_ID --percent 100 --slippage-bps 500 \
