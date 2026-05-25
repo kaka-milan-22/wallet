@@ -35,7 +35,7 @@ wallet integration; the other two Tier-1-feeling items are operator setup.
 
 | Gap | Why it matters | Sketch |
 |---|---|---|
-| **Hardware wallet integration (Ledger / Trezor)** | Hot mnemonic in agent-vault is fine for testnet and small daily-spend hot accounts. Anything beyond a few hundred dollars belongs on a device that never exposes the seed. **Full rationale + threat model + integration sketch:** [`docs/why_hard_wallet.md`](docs/why_hard_wallet.md). | Refactor `core/signer.py` to dispatch on `account.account_type` (`hd_mnemonic` vs `ledger`). Wallet builds the unsigned tx; signing happens on-device with user button press. Keystore-backed accounts and Ledger accounts coexist in `state.json`. |
+| **Hardware wallet integration (Ledger / Trezor)** | Hot mnemonic in agent-vault is fine for testnet and small daily-spend hot accounts. Anything beyond a few hundred dollars belongs on a device that never exposes the seed. **Interim mitigation available since `1.09`:** `agent-vault require-presence wallet-main-mnemonic --on` (requires `@kaka-milan-22/agent-vault@0.5.0+`) gates every signature on macOS Touch ID — closes the largest part of the LLM-agent / supply-chain exposure without buying hardware, but does NOT raise the resilience threshold above ~$1.5k; the binary-replacement and post-auth memory-dump gaps remain. **Full rationale + threat model + integration sketch:** [`docs/why_hard_wallet.md`](docs/why_hard_wallet.md). | Refactor `core/signer.py` to dispatch on `account.account_type` (`hd_mnemonic` vs `ledger`). Wallet builds the unsigned tx; signing happens on-device with user button press. Keystore-backed accounts and Ledger accounts coexist in `state.json`. |
 
 ### Configuration setup — no code change needed
 

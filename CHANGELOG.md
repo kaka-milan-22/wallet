@@ -18,6 +18,77 @@ captured in `git log` — `1.01` is the first formal release tag.
 Next planned tracks:
 - **Ledger / hardware-wallet integration** — the documented mainnet > $1.5k
   gating item; see `docs/why_hard_wallet.md`.
+
+---
+
+## [1.09] — 2026-05-25 — Document Touch ID gate as interim hardware-wallet alternative
+
+### Operator action required
+
+If you're on macOS and already on `@kaka-milan-22/agent-vault@0.5.0+`,
+enable the presence gate on the wallet mnemonic key with one command:
+
+```bash
+agent-vault require-presence wallet-main-mnemonic --on \
+    --reason "Sign Ethereum transaction"
+```
+
+(Replace `wallet-main-mnemonic` with whatever `vault_key` you stored your
+mnemonic under — check `agent-vault list` to confirm the key name.)
+
+After this every wallet operation that signs a tx — `send`, `swap`,
+`aave supply/withdraw/borrow/repay`, `lp mint/increase/remove/collect`,
+`tx-replace` — pops a macOS Touch ID system prompt before the mnemonic
+ever decrypts. Cancel the prompt and the wallet aborts cleanly with
+`VaultError: agent-vault write failed: ✗ Presence verification denied`;
+nothing reaches the chain.
+
+### Why
+
+The structural concession of this CLI is that an LLM agent can call
+`wallet send` / `wallet swap` directly — that's the whole product
+positioning. Combined with the agent's normal threat surface
+(prompt injection, supply-chain compromise of any tool the agent or its
+dependencies can spawn), this means **any UID-`$USER` process can in
+principle exfiltrate the mnemonic** via `agent-vault write <fifo>
+--content "<agent-vault:wallet-main-mnemonic>"`. Hardware wallets are
+the proper fix; until you get one, gating each decrypt on a Secure
+Enclave biometric prompt closes ~80% of that exposure for $0.
+
+Importantly the gate is enforced **inside agent-vault's process**, not
+in wallet — `vault.reveal()` continues to use the same FIFO + placeholder
+transport, just blocked on the OS-level Touch ID dialog before the
+helper streams plaintext. **No wallet code change is required**; this is
+purely a docs + operator-guidance release plus the ROADMAP entry update.
+
+Threat model and known limits (binary replacement, post-auth memory
+dump, password fallback after 5 failed attempts, prompt blindness) are
+documented at
+[`@kaka-milan-22/agent-vault` docs/PRESENCE.md](https://github.com/kaka-milan-22/agent-vault/blob/main/docs/PRESENCE.md).
+None of them invalidate the recommendation that mainnet > $1.5k still
+needs hardware.
+
+### Changed
+
+- `docs/why_hard_wallet.md` adds a new section "还没买硬件钱包前的最强中间方案:
+  agent-vault Touch ID 闸门" between the Ledger integration sketch and the
+  decision tree. Decision tree updated: mainnet-daily-<-$1k and agent-driven
+  strategy rows now mandate `--require-presence` alongside policy limits.
+- `ROADMAP.md` Hardware-wallet-integration row notes the interim mitigation
+  and explicitly clarifies it does NOT raise the ~$1.5k threshold.
+
+### Not changed
+
+- No `src/wallet/*` Python code. The presence gate is transparent to the
+  wallet — agent-vault enforces it inside its own subprocess, surfaced to
+  wallet as a normal non-zero exit with stderr text. Existing `VaultError`
+  handling in `signer.sign_transaction` propagates the denial cleanly to
+  CLI envelopes.
+- No `tests/` changes. Wallet behavior under a gated mnemonic is
+  end-to-end identical to wallet behavior under a temporarily-unavailable
+  agent-vault — both surface as `VaultError`, which is already covered.
+
+
 - **`wallet policy verify`** — Etherscan round-trip of allowlist entries
   remains planned. The MEV-protected-broadcast half of the original plan
   shipped in `1.07`.

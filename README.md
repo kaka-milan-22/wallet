@@ -102,7 +102,7 @@ export ETHERSCAN_API_KEY=...
 
 # 3. Generate an HD wallet (mnemonic shown once; you store it in agent-vault)
 uv run wallet account create main
-agent-vault set wallet/main/mnemonic        # paste mnemonic; agent will never see it again
+agent-vault set wallet-main-mnemonic        # paste mnemonic; agent will never see it again
 
 # 4. Fund the address from a Sepolia faucet, then:
 uv run wallet balance
@@ -177,7 +177,7 @@ uv run wallet account create main
 # It also prints the next command:
 
 # 2. (in your terminal — NOT inside an LLM agent)
-agent-vault set wallet/main/mnemonic
+agent-vault set wallet-main-mnemonic
 # paste the mnemonic when prompted
 
 # 3. Verify
@@ -189,7 +189,7 @@ To **import** an existing mnemonic instead:
 
 ```sh
 uv run wallet account import main           # prompts hidden input
-agent-vault set wallet/main/mnemonic        # paste the same mnemonic
+agent-vault set wallet-main-mnemonic        # paste the same mnemonic
 ```
 
 To **derive** more addresses from the same mnemonic:
