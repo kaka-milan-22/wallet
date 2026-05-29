@@ -1,4 +1,4 @@
-"""Sign transactions for accounts whose mnemonic is stored in agent-vault.
+"""Sign transactions for accounts whose mnemonic is stored in alice (AnB).
 
 The mnemonic is fetched, the private key is derived, the tx is signed, and the
 mnemonic / key references are dropped before this function returns. The signed
@@ -20,7 +20,7 @@ def sign_transaction(account: AccountEntry, tx: dict[str, Any]) -> bytes:
     if not vault.has(account.vault_key):
         raise RuntimeError(
             f"vault key '{account.vault_key}' is empty — run "
-            f"`agent-vault set {account.vault_key}` first"
+            f"`alice set {account.vault_key}` first"
         )
 
     mnemonic = vault.reveal(account.vault_key)

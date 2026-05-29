@@ -21,6 +21,59 @@ Next planned tracks:
 
 ---
 
+## [1.10] — 2026-05-29 — Migrate secret backend from agent-vault to alice (AnB)
+
+Replaces the local `agent-vault` CLI with [`alice`](https://github.com/kaka-milan-22/AnB),
+the AnB client/server secrets vault. `alice` keeps only ciphertext on the
+client; the AES master key now lives in `bob`, a separate KMS daemon reached
+over mutual TLS. The redaction model and the `<agent-vault:key>` placeholder
+format are unchanged, so existing config-file placeholders keep resolving.
+
+### Operator action required
+
+- `bob` must be **running and unlocked** for any signing operation
+  (`send` / `swap` / `aave …` / `lp …` / `tx-replace`). Start it with
+  `bob serve` (or `bob serve -D` to daemonize); it stays unlocked until idle
+  TTL or shutdown. `has()` (existence checks) still works while bob is down.
+- The mnemonic must live in alice under the same key name
+  (`wallet-main-mnemonic` by default). If you're coming from agent-vault, run
+  `scripts/migrate-from-agent-vault.sh` (in the AnB repo) with bob serving.
+- **Recommended:** this bob is shared by multiple consumers (wallet / n9e /
+  reminder) under one allow-all identity, which gives the wallet no isolation.
+  For real defense in depth, enroll a **dedicated** alice identity for the
+  wallet and scope it in `authz.json` to the `wallet-` key prefix, so a stolen
+  client cert from another consumer can't reach the mnemonic.
+
+### Changed
+
+- `storage/vault.py` now shells out to `alice` instead of `agent-vault`. The
+  FIFO transport is unchanged; the write call adds `--quiet` so only the
+  restored secret reaches the pipe.
+- New `VaultUnavailableError` (subclass of `VaultError`): a bob that is
+  unreachable or locked is now surfaced with a `bob serve` remediation hint
+  instead of a generic failure, and the FIFO reader fast-bails when `alice`
+  exits without producing output (no more 10s hang when bob is down).
+- Error/help strings in `signer.py` and `cli/account.py` now reference
+  `alice set …` and note the bob dependency.
+
+### Supersedes 1.09
+
+AnB v2 has **no per-key Touch ID gate** — agent-vault 0.5.0's
+`--require-presence` (recommended in `1.09`) no longer applies. It is replaced,
+not regressed: the master key is no longer derivable from the logged-in
+Keychain, so the offline-decrypt path the gate defended against is gone. The
+remaining interim hardening (short `bob serve --ttl`, `authz.json` prefix
+scoping, locked-down `client.key`) and the unchanged ~$1.5k hardware-wallet
+threshold are documented in `docs/why_hard_wallet.md` and `ROADMAP.md`.
+
+### Tests
+
+- `tests/test_vault.py` updated for the `alice` command surface and the
+  appended `--quiet` arg, plus a new bob-down classification test asserting
+  `VaultUnavailableError` and the fast-bail path. Full suite green.
+
+---
+
 ## [1.09] — 2026-05-25 — Document Touch ID gate as interim hardware-wallet alternative
 
 ### Operator action required

@@ -195,7 +195,7 @@ uv run wallet policy show                             # 复核
 - [ ] `uv run wallet info --chain ethereum` 显示 chain_id=1，RPC 通
 - [ ] `uv run wallet balance --account mainnet_test --chain ethereum` 显示 0.05 ETH
 - [ ] `uv run wallet policy show` allowlist 含 3 个合约
-- [ ] `agent-vault scan "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"` 报 0 secrets
+- [ ] `alice scan "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"` 报 0 secrets（TTY only）
 - [ ] gas 现价 `curl -s $WALLET_ETH_RPC -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice","params":[]}'`，转 gwei 后 ≤ 25
 - [ ] `ps aux | grep wallet` 不含明文 mnemonic
 - [ ] 默认 chain 仍是 sepolia（每步用 `--chain ethereum` 显式指定，避免误切）
@@ -476,7 +476,7 @@ uv run wallet policy show
 
 ## 8. 已知风险摘要（来自 ROADMAP）
 
-- **无 Ledger**: 私钥仍是 agent-vault 里的 mnemonic。测试用 0.05 ETH 在风险阈以下，可接受。
+- **无 Ledger**: 私钥仍是 alice（AnB）里的 mnemonic，master key 在 bob 内。测试用 0.05 ETH 在风险阈以下，可接受。签名前确认 bob 已 serve 且 unlocked。
 - **公共 RPC**: 不走 Flashbots，sandwich 风险存在但金额小（每笔 swap < $15）影响可忽略。
 - **policy verify 未实现**: allowlist 地址是手工抄的，**进 Phase 1 前必须用 Etherscan 二次核对** 每个合约地址的合约名（Uniswap V3 SwapRouter02 / Aave Pool / AllowanceHolder）。
 - **stuck-tx recovery 未实现**: 一旦 mempool 拥堵，没有内置 cancel/speedup，只能手工。

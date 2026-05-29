@@ -13,29 +13,32 @@ ROI 临界点：钱包余额超过 $1500 必备（Ledger Nano X ~$150，占比 <
 
 ---
 
-## 当前 agent-vault 链路的暴露面
+## 当前 alice (AnB) 链路的暴露面
 
 我们已经做了这些软件层加固：
 
-- 助记词加密存放在 agent-vault（OS keychain 派生密钥保护）
+- 助记词以密文存在 alice（AnB 客户端）；AES master key **不在客户端**，由独立的 `bob` KMS 守护进程持有（Argon2id 包裹 at rest，`mlock` 驻留内存，idle TTL 后清零），客户端经 mutual TLS 调用 bob 做解密
 - 取助记词走 Unix FIFO，明文不落 disk
 - 私钥派生后立即丢弃，进程退出后内存释放
 - TTY-only 写入 vault（agent 没办法自己 set/rm）
 - policy + idempotency + audit 防 agent 越权 / 重试 / 篡改
 
-**这些都是软件防御**。一旦攻击者拿到你笔记本上**用户级别**的执行权（不是 root，是 user），下面三条路任意一条都能拿到助记词：
+**这些都是软件防御**。AnB 比旧的 agent-vault 抬高了一档——master key 不再能从登录后自动解锁的 Keychain 派生出来，所以**离线撬保险柜这条路被堵死了**。但一旦攻击者拿到你笔记本上**用户级别**的执行权（不是 root，是 user），下面三条路任意一条仍能拿到助记词：
 
-### 攻击路径 1：直接撬保险柜
+### 攻击路径 1：冒充 alice 去问 bob 要
 
 ```
 笔记本被入侵（malware / phishing / 浏览器漏洞）
   ├─ 攻击者拿到当前用户进程权限
-  ├─ 读 ~/.config/agent-vault/* 加密文件 ✓
-  ├─ 读 macOS Keychain（用户登录后自动解锁）→ 拿主密钥 ✓
-  └─ 解密助记词 → 完事
+  ├─ 读 alice 的 client.key（0600，但同 UID 可读）✓  ← AnB 的 "secret-zero"
+  ├─ bob 正在 serve 且 unlocked？
+  │    ├─ 是 → 用偷来的 client cert 冒充 alice，请 bob 解密 → 拿到助记词 ✓
+  │    └─ 否（bob 关停 / 已被 idle TTL 清零）→ 拿不到，需要 operator 的 master password 才能重新解锁
+  └─ 注：这台 bob 多租户共用（wallet / n9e / reminder）。当前是单一 * identity，偷一张 cert = 三个租户全拿；
+     只有给 wallet 单独 enroll identity 并在 authz 限到 wallet- 前缀，偷到的 cert 才碰不到其它租户的密钥
 ```
 
-OS keychain 在用户登录后是自动解锁的——任何同 UID 进程都能调用 Security.framework 读出来。这不是 macOS 的 bug，是设计：用户输入登录密码 = 信任本机所有用户态进程。
+和 agent-vault 的关键区别：旧链路里"读 Keychain 派生主密钥"对同 UID 进程是**无条件**成立的；AnB 把它变成"**bob 必须此刻活着且解锁**"这个有条件窗口。把 `bob serve --ttl` 设短、用完即停，能把这个窗口压到最小——但只要 agent 要随时签名、bob 就得随时在线，这个结构性窗口就消不掉。这正是 AnB roadmap 把 "alice client key 上 Secure Enclave / PKCS#11" 列为下一步的原因：让冒充 alice 这一步也需要物理 presence。
 
 ### 攻击路径 2：供应链投毒
 
@@ -176,50 +179,33 @@ state.json 里 mnemonic 和 ledger 账户共存，policy / audit / idempotency �
 
 ---
 
-## 还没买硬件钱包前的最强中间方案：agent-vault Touch ID 闸门
+## 还没买硬件钱包前的中间加固：AnB 的 off-disk custody + 收紧 bob
 
-`@kaka-milan-22/agent-vault@0.5.0+` 引入 per-key `--require-presence` 标志。打开之后，**任何对该助记词的解密**——`wallet send` / `wallet swap` / `wallet aave supply` / 任意 `vault.reveal` 调用——都会先弹出 macOS 原生 Touch ID 系统对话框。Secure Enclave 验证发生在协处理器里，用户态代码**没有 API 可以跳过、关闭或伪造**这个 prompt。
+> **变更说明**：旧版本这里推荐的是 `@kaka-milan-22/agent-vault@0.5.0+` 的 per-key
+> `--require-presence`（每次解密弹 macOS Touch ID）。迁移到 AnB 后这条不再适用——
+> **AnB v2 没有 per-key Touch ID 闸门**。它不是退步而是换了机制：master key 不再
+> 由 Keychain 派生，"离线撬保险柜"那条路本身就没了；presence gate 留待 AnB roadmap
+> 的 "alice client key 上 Secure Enclave / PKCS#11" 重新引入。
 
-这不替代硬件钱包，但把上面"攻击路径 1：直接撬保险柜"那条线从"任何同 UID 进程都能读"变成"任何同 UID 进程都得让你物理摸一下指纹传感器"。对 LLM agent + 软件供应链威胁，这条 hardening 的杠杆比比例尺都高——成本是 1 个命令 + 每次签名多 1 个 Touch ID prompt，**收益是 agent execution surface 这条结构性漏洞被 SEP 物理隔离**。
+在没有硬件钱包、也没有 SEP-backed client key 之前，靠下面这几条把暴露窗口压到最小：
 
-### 启用
-
-升级 agent-vault 到 0.5.0+：
-
-```bash
-npm install -g @kaka-milan-22/agent-vault
-agent-vault --version    # 应显示 0.5.0 或更高
-```
-
-给现有 wallet mnemonic key 加闸门（不重新输入助记词，密文不变）：
-
-```bash
-agent-vault require-presence wallet-main-mnemonic --on \
-    --reason "Sign Ethereum transaction"
-```
-
-确认：
-
-```bash
-agent-vault list
-# wallet-main-mnemonic  [presence]
-```
-
-之后任何 `wallet ...` 命令需要签名时，Touch ID 系统 prompt 会显示
-**"agent-vault wants to Sign Ethereum transaction"**。批准就继续，取消就 fail-closed —— wallet 收到 `VaultError("agent-vault write failed: ✗ Presence verification denied")` 然后 abort，不签 / 不广播 / 不改链上状态。
+- **off-disk KEK**：master key 只在 bob 进程里（`mlock`，idle TTL 清零），客户端只有密文。攻击路径 1 从"无条件读 Keychain"降级成"bob 必须此刻活着且解锁"。
+- **短 idle TTL**：`bob serve --ttl <秒>`，用完即清零。无人值守时间越短，可被冒充窗口越小。
+- **专用 identity + authz 前缀授权**：这台 bob 是多消费者共用的（wallet / n9e / reminder 当前同一张 cert + `*`），所以给 wallet **单独 enroll 一个 alice identity**（独立 client cert / `ANB_ALICE_DIR`），再在 `authz.json` 把它限到 `wallet-` 前缀。这样 wallet 的 cert 被偷只能碰 `wallet-`，碰不到 n9e/reminder 的密钥；反过来那些暴露面更大的 bot 也碰不到助记词。共用 identity 给 `*` 拿不到这层隔离。
+- **锁死 client.key**：保持 `~/.anb/alice/client.key` 0600；它是 AnB 的 secret-zero，丢了等于把冒充 alice 的能力交出去——丢了就轮换 CA / 重签。
 
 ### 还没解决的（为什么 Ledger 仍是终点）
 
-Touch ID 闸门把攻击者的成本提高一档，但**没有抹掉**：
+off-disk custody 把攻击者的成本提高一档，但**没有抹掉**：
 
-- **二进制替换攻击**：拿到笔记本写权限的攻击者可以把 `/opt/homebrew/bin/agent-vault-presence`（SEP helper）替换成 `exit 0` 的假货跳过 Touch ID。v0.5.0 helper 还没 Apple Developer ID codesign（v0.6 计划补上），Gatekeeper 不能验证完整性。Ledger 的 secure element 防御这条路。
-- **进程内存 dump**：Touch ID 通过后的几十毫秒内，明文 mnemonic 仍然在 agent-vault 的 V8 堆里。同 UID 攻击者用 `vmmap` / `lldb` 卡住那一刻仍能拿到。Ledger 的私钥从不离开 SE。
-- **5 次错指纹后降级登录密码**：Apple 强制行为，登录密码弱就降级。Ledger 不存在密码 fallback。
-- **Prompt 盲点**：你被训练成"反射性点 Touch ID"之后，攻击者只要在不寻常的时机让 prompt 弹出就有概率得手。Ledger 的物理按钮 + 屏幕显示 calldata 让"我现在在签什么"可见。
+- **二进制替换攻击**：拿到笔记本写权限的攻击者可以把 PATH 上的 `alice` 换成 shim，它持有 client cert、能照常向 bob 要明文。Ledger 的 secure element 防御这条路（ROADMAP 里 "alice binary integrity" 项是对应的软件层缓解）。
+- **冒充 + 在线 bob**：偷到 `client.key` 且 bob 此刻 unlocked，同 UID 进程就能请 bob 解密。这是 AnB 当前模型下最现实的一条，只有把 client key 挪进 Secure Enclave（需要物理 presence 才能用）才真正堵上。
+- **进程内存 dump**：bob 解密后明文 mnemonic 在 wallet 进程内存里存在几十毫秒，同 UID 攻击者用 `vmmap` / `lldb` 卡住那一刻仍能拿到。Ledger 的私钥从不离开 SE。
+- **bob 是高价值靶子**：bob 持有 KEK、且看得到所有流经它的明文。无人值守的 bob 必须按 SPOF 来加固和审计。
 
-**所以阈值不变**：mainnet 资金超过 ~$1.5k 还是上 Ledger。这个中间方案的定位是**测试网 + agent 实验 + 主网小额日常**这一档，让你在不买设备的情况下把"软件层 LLM agent + supply chain"这条最大暴露面砍掉大部分。
+**所以阈值不变**：mainnet 资金超过 ~$1.5k 还是上 Ledger。这个中间方案的定位是**测试网 + agent 实验 + 主网小额日常**这一档，在不买设备的前提下，把"离线偷密钥"这条最大暴露面直接消除、把"在线冒充"压成一个可收紧的小窗口。
 
-完整威胁模型 + 限制清单见 [`@kaka-milan-22/agent-vault` docs/PRESENCE.md](https://github.com/kaka-milan-22/agent-vault/blob/main/docs/PRESENCE.md)。
+AnB 的信任边界与限制清单见 [`AnB` README "Trust boundary"](https://github.com/kaka-milan-22/AnB#trust-boundary-read-this)。
 
 ---
 
@@ -227,14 +213,14 @@ Touch ID 闸门把攻击者的成本提高一档，但**没有抹掉**：
 
 | 场景 | 用什么 |
 |---|---|
-| 测试网 / agent 实验 / 学习 | agent-vault 即可（presence gate 可选；测试网资金归零无所谓） |
-| 主网每日操作 < $1k | agent-vault **+ `--require-presence` 闸门** + 严格 policy 上限 |
+| 测试网 / agent 实验 / 学习 | alice (AnB) 即可（测试网资金归零无所谓；bob 默认配置就行） |
+| 主网每日操作 < $1k | alice (AnB) **+ 短 `bob serve --ttl` + 专用 identity 限 `wallet-` 前缀** + 严格 policy 上限 |
 | 主网持仓 $1k-$10k | Ledger 单签 |
 | 主网持仓 > $10k | Ledger + Safe multisig 共管 |
 | 团队 / 公司账户 | Safe multisig + 至少 2 个 Ledger |
-| 全自动收益策略 | 小额 hot 账户（policy 严限 **+ presence gate**）+ 大额冷储 Ledger，定期 hot → cold |
+| 全自动收益策略 | 小额 hot 账户（policy 严限 **+ 收紧 bob**）+ 大额冷储 Ledger，定期 hot → cold |
 
-**底线**：任何放过夜的资金都应该至少有 Ledger 这一层。临时的小额 hot wallet（< $100）可以用 agent-vault + presence gate 顶；agent 驱动的策略账户（即便小额）**必须**开 presence gate，因为它的暴露面比手动操作的 hot wallet 大一档。
+**底线**：任何放过夜的资金都应该至少有 Ledger 这一层。临时的小额 hot wallet（< $100）可以用 alice (AnB) 顶；agent 驱动的策略账户（即便小额）**必须**把 bob 的 idle TTL 设短、给该账户单独 enroll identity 并 authz 限到 `wallet-` 前缀、client.key 锁死，因为它的暴露面比手动操作的 hot wallet 大一档。等 AnB 的 Secure-Enclave client key 落地后，这一档可以再加回物理 presence 闸门。
 
 ---
 

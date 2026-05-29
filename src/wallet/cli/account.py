@@ -35,10 +35,10 @@ def _print_set_instructions(vault_key: str) -> None:
     stdout_console().print(
         Panel(
             f"[bold]Next step (in your terminal, NOT inside an agent):[/bold]\n\n"
-            f"  [cyan]agent-vault set {vault_key}[/cyan]\n\n"
+            f"  [cyan]alice set {vault_key}[/cyan]\n\n"
             f"When prompted, paste the mnemonic above. The wallet CLI will then\n"
-            f"be able to sign transactions for this account.",
-            title="agent-vault setup",
+            f"be able to sign transactions for this account (requires bob running).",
+            title="alice (AnB) setup",
             border_style="yellow",
         )
     )
@@ -208,7 +208,7 @@ def show(name: str = typer.Argument(...)) -> None:
         if x["signed"]:
             c.print("signed:  [green]yes (vault populated)[/green]")
         else:
-            c.print(f"signed:  [red]no — run agent-vault set {x['vault_key']}[/red]")
+            c.print(f"signed:  [red]no — run alice set {x['vault_key']}[/red]")
 
     emit(data, render)
 

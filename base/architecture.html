@@ -579,15 +579,17 @@ open http://localhost:3000              # Grafana web UI
 # 2.2 你自己跟 bot 说一句话，访问
 #     https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates
 #     找到 chat.id
-# 2.3 存到 agent-vault
-agent-vault set lp/telegram/token
-agent-vault set lp/telegram/chat_id
+# 2.3 存到 alice（AnB；master key 在 bob 内，需 bob 已 serve）
+alice set lp/telegram/token
+alice set lp/telegram/chat_id
 
-# 2.4 测试
-agent-vault get lp/telegram/token | xargs -I{} \
-  curl -s "https://api.telegram.org/bot{}/sendMessage" \
-       -d "chat_id=$(agent-vault get lp/telegram/chat_id)" \
-       -d "text=test from lp setup"
+# 2.4 测试 —— 用 alice exec 把凭据注入子进程 env（get --reveal 是 TTY-only，
+#     bot/管道用不了；exec 是 AnB 给 agent/脚本的正路）。
+#     首次运行会 default-deny 并打印要加进 exec-allowlist.json 的精确 triple。
+alice exec --env 'TG=<agent-vault:lp/telegram/token>' \
+           --env 'CHAT=<agent-vault:lp/telegram/chat_id>' \
+  -- bash -c 'curl -s "https://api.telegram.org/bot${TG}/sendMessage" \
+       -d "chat_id=${CHAT}" -d "text=test from lp setup"'
 </code></pre>
 
 <h3>Step 3 — wallet 配置 Base（5 分钟）</h3>
@@ -907,9 +909,14 @@ def save_state(s):
     STATE_FILE.write_text(json.dumps(s))
 
 def telegram_send(msg: str):
-    # 用 agent-vault 拿凭据
-    token = subprocess.check_output(["agent-vault", "get", "lp/telegram/token"]).decode().strip()
-    chat_id = subprocess.check_output(["agent-vault", "get", "lp/telegram/chat_id"]).decode().strip()
+    # 凭据由 `alice exec --env` 在启动时注入本进程 env（operator-allowlisted）。
+    # bot 进程里不再调 alice —— alice get --reveal 是 TTY-only，脚本调不动。
+    # 启动方式见下方 systemd/launch 片段：
+    #   alice exec --env 'LP_TG_TOKEN=<agent-vault:lp/telegram/token>' \
+    #              --env 'LP_TG_CHAT_ID=<agent-vault:lp/telegram/chat_id>' \
+    #     -- python lp_bot.py
+    token = os.environ["LP_TG_TOKEN"]
+    chat_id = os.environ["LP_TG_CHAT_ID"]
     bot = telegram.Bot(token=token)
     bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
 
@@ -1055,20 +1062,20 @@ async def handle_resume():
   <li>跟你的新 bot 说一句话（任何消息）激活它</li>
   <li>在浏览器打开 <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code></li>
   <li>JSON 里找 <code>"chat":{"id":12345678}</code>，这是你的 chat_id</li>
-  <li>token + chat_id 存进 agent-vault：
-    <pre><code>agent-vault set lp/telegram/token
-agent-vault set lp/telegram/chat_id</code></pre>
+  <li>token + chat_id 存进 alice（AnB，需 bob 已 serve）：
+    <pre><code>alice set lp/telegram/token
+alice set lp/telegram/chat_id</code></pre>
   </li>
-  <li>测试：
-    <pre><code>TOKEN=$(agent-vault get lp/telegram/token)
-CHAT=$(agent-vault get lp/telegram/chat_id)
-curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-     -d "chat_id=${CHAT}" -d "text=test from kk lp setup"</code></pre>
+  <li>测试（用 <code>alice exec</code> 注入 env；首次会 default-deny 并打印要加进 exec-allowlist 的 triple）：
+    <pre><code>alice exec --env 'TOKEN=&lt;agent-vault:lp/telegram/token&gt;' \
+           --env 'CHAT=&lt;agent-vault:lp/telegram/chat_id&gt;' \
+  -- bash -c 'curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+     -d "chat_id=${CHAT}" -d "text=test from kk lp setup"'</code></pre>
   </li>
 </ol>
 
 <div class="callout amber">
-绝不要把 token 写进代码 / git / 任何 plaintext 文件。<code>agent-vault</code> + 运行时 <code>subprocess.check_output</code> 取，是 LP 系统最低安全标准。
+绝不要把 token 写进代码 / git / 任何 plaintext 文件。用 <code>alice exec --env 'K=&lt;agent-vault:key&gt;'</code> 在启动时把凭据注入 bot 进程 env（operator 预先 allowlist 该 exec triple），是 LP 系统最低安全标准。master key 在 bob 内，token 明文从不落盘。
 </div>
 
 

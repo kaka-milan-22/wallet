@@ -262,7 +262,7 @@ invoke them under any circumstances**:
 - `--policy-bypass` — silently rejected in agent context anyway, but don't try
 - `--unlimited` on `wallet approve set` — refused by default policy
 - Reading `~/.wallet/audit.log` programmatically to plan next actions
-- `agent-vault set / get / rm / import` — these have TTY checks that will reject you anyway
+- `alice set / get / rm / import` — these have TTY checks that will reject you anyway
 
 If the user wants any of these done, **tell them to run the command in their
 own terminal** (in Claude Code, `! <command>` drops to the shell).
@@ -414,8 +414,8 @@ also violate policy (e.g., trying multiple addresses to find one that works
 
 The wallet treats you as a **constrained signing delegate**:
 
-- You hold no private keys (those live in agent-vault, accessed via FIFO; you
-  never see the mnemonic).
+- You hold no private keys (the mnemonic lives in alice/AnB with the master key
+  held by bob over mTLS, accessed via FIFO; you never see the mnemonic).
 - You can propose operations within the policy envelope; you cannot widen it.
 - You are responsible for: **clear user confirmations**, **fresh request-ids**,
   **handling rejections gracefully**.
