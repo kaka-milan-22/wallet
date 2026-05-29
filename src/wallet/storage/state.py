@@ -10,7 +10,7 @@ class AccountEntry(BaseModel):
     name: str
     address: str  # EIP-55 checksummed
     derivation_path: str
-    vault_key: str  # agent-vault key holding the mnemonic
+    vault_key: str  # alice (AnB) key holding the mnemonic
 
 
 class WatchEntry(BaseModel):

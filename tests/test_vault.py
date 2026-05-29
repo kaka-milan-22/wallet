@@ -1,8 +1,8 @@
 """Tests for storage.vault.reveal()'s FIFO transport + tempfile fallback.
 
 We mock `subprocess.Popen` and `subprocess.run` (so the test does not depend on
-agent-vault being installed or the user's actual vault contents) but use a
-real FIFO and real `select.select` to exercise the production transport code.
+alice being installed or the user's actual vault contents) but use a real FIFO
+and real `select.select` to exercise the production transport code.
 """
 
 from __future__ import annotations
@@ -17,12 +17,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from wallet.storage import vault
-from wallet.storage.vault import VaultError, reveal
+from wallet.storage.vault import VaultError, VaultUnavailableError, reveal
 
 
-class FakeAgentVault:
-    """Simulates `agent-vault write <fifo> --content <placeholder>` by writing
-    `write_value` to the FIFO in a background thread."""
+class FakeAlice:
+    """Simulates `alice write <fifo> --content <placeholder> --quiet` by writing
+    `write_value` to the FIFO in a background thread.
+
+    `exited=True` makes `poll()` report the exit code *before* `wait()` is
+    called — used to model an alice that died immediately (e.g. bob down) so the
+    reader's fast-bail path can be exercised. `stderr_text` overrides what
+    `proc.stderr.read()` returns."""
 
     def __init__(
         self,
@@ -30,14 +35,17 @@ class FakeAgentVault:
         write_value: str | None,
         *,
         exit_code: int = 0,
+        stderr_text: str | None = None,
+        exited: bool = False,
     ):
         self.fifo = fifo_path
         self.write_value = write_value
         self.exit_code = exit_code
-        self.returncode: int | None = None
+        self.returncode: int | None = exit_code if exited else None
         self.stderr = MagicMock()
+        default_err = "" if exit_code == 0 else f"fake exit {exit_code}"
         self.stderr.read = MagicMock(
-            return_value="" if exit_code == 0 else f"fake exit {exit_code}"
+            return_value=stderr_text if stderr_text is not None else default_err
         )
         self._thread: threading.Thread | None = None
         if write_value is not None:
@@ -58,7 +66,7 @@ class FakeAgentVault:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
-                raise subprocess.TimeoutExpired(cmd="agent-vault", timeout=timeout)
+                raise subprocess.TimeoutExpired(cmd="alice", timeout=timeout)
         self.returncode = self.exit_code
         return self.exit_code
 
@@ -72,8 +80,8 @@ class FakeAgentVault:
 
 def _popen_factory(write_value: str | None, exit_code: int = 0):
     def factory(args, **kwargs):
-        # args = [bin, "write", fifo_path, "--content", placeholder]
-        return FakeAgentVault(args[2], write_value, exit_code=exit_code)
+        # args = [bin, "write", fifo_path, "--content", placeholder, "--quiet"]
+        return FakeAlice(args[2], write_value, exit_code=exit_code)
 
     return factory
 
@@ -99,7 +107,7 @@ def test_reveal_strips_trailing_newline(has_true, monkeypatch):
 
 
 def test_reveal_raises_when_placeholder_unchanged(has_true, monkeypatch):
-    # agent-vault wrote the placeholder back unchanged — substitution failed
+    # alice wrote the placeholder back unchanged — substitution failed
     monkeypatch.setattr(subprocess, "Popen", _popen_factory("<agent-vault:k>"))
     with pytest.raises(VaultError, match="placeholder was not substituted"):
         reveal("k")
@@ -111,10 +119,40 @@ def test_reveal_raises_when_key_missing(has_false):
 
 
 def test_reveal_raises_on_nonzero_exit(has_true, monkeypatch):
-    # Empty write + rc=1 → VaultError("agent-vault write failed: ...")
+    # Empty write + rc=1 → VaultError("alice write failed: ...")
     monkeypatch.setattr(subprocess, "Popen", _popen_factory("", exit_code=1))
-    with pytest.raises(VaultError, match="agent-vault write failed"):
+    with pytest.raises(VaultError, match="alice write failed"):
         reveal("k")
+
+
+def test_reveal_classifies_bob_down(has_true, monkeypatch):
+    """When alice exits immediately without writing (bob unreachable), the
+    reader fast-bails, the tempfile fallback re-runs alice, and the
+    connection-refused stderr is classified as VaultUnavailableError — not a
+    generic failure."""
+    monkeypatch.setattr(vault, "_FIFO_TIMEOUT_SECONDS", 0.3)
+
+    # Popen: alice exited 1 right away, never connected a writer to the FIFO.
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda args, **kw: FakeAlice(args[2], None, exit_code=1, exited=True),
+    )
+
+    def fake_run(args, **kwargs):
+        r = MagicMock()
+        r.returncode = 1
+        r.stderr = "dial tcp 127.0.0.1:8443: connect: connection refused"
+        r.stdout = ""
+        return r
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    started = time.monotonic()
+    with pytest.raises(VaultUnavailableError, match="unreachable or locked"):
+        reveal("k")
+    # Fast-bail: must NOT have waited out the full FIFO timeout.
+    assert time.monotonic() - started < 0.3
 
 
 def test_reveal_cleans_fifo_on_success(has_true, monkeypatch):
@@ -159,13 +197,15 @@ def test_reveal_falls_back_to_tempfile_on_writer_hang(has_true, monkeypatch):
     # Speed up the timeout for a fast test
     monkeypatch.setattr(vault, "_FIFO_TIMEOUT_SECONDS", 0.3)
 
-    # write_value=None ⇒ no writer thread spawned ⇒ FIFO never gets a writer
+    # write_value=None ⇒ no writer thread spawned ⇒ FIFO never gets a writer.
+    # poll() stays None (proc still "running"), so the fast-bail path does not
+    # fire and we exercise the real timeout → fallback transition.
     monkeypatch.setattr(subprocess, "Popen", _popen_factory(None))
 
     real_mnemonic = "fallback-mnemonic-recovered"
 
     def fake_run(args, **kwargs):
-        # Simulate agent-vault write to the tempfile path: substitute on disk.
+        # Simulate alice write to the tempfile path: substitute on disk.
         path = args[2]
         with open(path, "w") as f:
             f.write(real_mnemonic)

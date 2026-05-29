@@ -13,8 +13,9 @@ WalletConnect, no `window.ethereum` injection.
 
 ## 1. Account management
 
-HD wallet (BIP-39 + BIP-44), mnemonic stored in `agent-vault` and read into
-the signing process via a Unix FIFO so plaintext never lands on disk. The
+HD wallet (BIP-39 + BIP-44), mnemonic stored in `alice` (AnB; the master key
+lives in `bob` over mTLS, never on the client) and read into the signing
+process via a Unix FIFO so plaintext never lands on disk. The
 `account create` and `account import` flows are TTY-only — they print the
 mnemonic to stdout, which would enter an LLM's context window if invoked
 under an agent.
@@ -22,7 +23,7 @@ under an agent.
 ```sh
 # Generate a fresh wallet (TTY only)
 wallet account create main
-# →  prints 12-word mnemonic + instructs `agent-vault set wallet-main-mnemonic`
+# →  prints 12-word mnemonic + instructs `alice set wallet-main-mnemonic`
 
 # Derive additional accounts from the same mnemonic
 wallet account derive main --index 1 --as second
@@ -495,7 +496,7 @@ git clone git@github.com:kaka-milan-22/wallet.git && cd wallet && uv sync
 export WALLET_SEPOLIA_RPC=https://ethereum-sepolia.publicnode.com
 export ETHERSCAN_API_KEY=…    # free at https://etherscan.io/myapikey
 uv run wallet account create main
-agent-vault set wallet-main-mnemonic    # paste the mnemonic
+alice set wallet-main-mnemonic          # paste the mnemonic
 uv run wallet policy init
 $EDITOR ~/Library/Application\ Support/wallet/policy.json
 # add contract_allowlist:

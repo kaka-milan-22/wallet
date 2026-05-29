@@ -55,9 +55,11 @@ agent's process boundary.
                           └──────────────────────────────┘
 ```
 
-The mnemonic lives encrypted in [`agent-vault`](https://github.com/kaka-milan-22/agent-vault),
-retrieved into the signing process via a Unix FIFO — kernel pipe, never written
-to `/tmp` or any file the agent can read.
+The mnemonic lives encrypted in [`alice`](https://github.com/kaka-milan-22/AnB)
+(the AnB secrets client; the master key never touches the client — it stays in
+`bob`, a separate KMS daemon reached over mutual TLS). It is retrieved into the
+signing process via a Unix FIFO — kernel pipe, never written to `/tmp` or any
+file the agent can read. Signing therefore requires `bob` running and unlocked.
 
 ## How it compares
 
@@ -100,9 +102,9 @@ uv sync
 export WALLET_SEPOLIA_RPC=https://ethereum-sepolia.publicnode.com
 export ETHERSCAN_API_KEY=...
 
-# 3. Generate an HD wallet (mnemonic shown once; you store it in agent-vault)
+# 3. Generate an HD wallet (mnemonic shown once; you store it in alice)
 uv run wallet account create main
-agent-vault set wallet-main-mnemonic        # paste mnemonic; agent will never see it again
+alice set wallet-main-mnemonic              # paste mnemonic; agent will never see it again
 
 # 4. Fund the address from a Sepolia faucet, then:
 uv run wallet balance
@@ -119,8 +121,9 @@ For the full command tree see [Daily commands](#daily-commands) below.
 ## What you get today (Sepolia tested end-to-end)
 
 - **Accounts** — BIP-39 HD wallet; mnemonic encrypted in
-  [`agent-vault`](https://github.com/kaka-milan-22/agent-vault), retrieved
-  into the signing process via Unix FIFO (kernel pipe, never on disk)
+  [`alice`](https://github.com/kaka-milan-22/AnB) (master key held by `bob`
+  over mTLS), retrieved into the signing process via Unix FIFO (kernel pipe,
+  never on disk)
 - **Transfers** — ETH + ERC-20 send, ERC-20 approve / allowance / revoke
 - **Swap** — `wallet swap` via 0x aggregator (spender + `transaction.to`
   pinned to the chain-known AllowanceHolder, defending against
@@ -176,8 +179,8 @@ uv run wallet account create main
 # Output shows the mnemonic ONCE. Write it down.
 # It also prints the next command:
 
-# 2. (in your terminal — NOT inside an LLM agent)
-agent-vault set wallet-main-mnemonic
+# 2. (in your terminal — NOT inside an LLM agent; bob must be running)
+alice set wallet-main-mnemonic
 # paste the mnemonic when prompted
 
 # 3. Verify
@@ -189,7 +192,7 @@ To **import** an existing mnemonic instead:
 
 ```sh
 uv run wallet account import main           # prompts hidden input
-agent-vault set wallet-main-mnemonic        # paste the same mnemonic
+alice set wallet-main-mnemonic              # paste the same mnemonic
 ```
 
 To **derive** more addresses from the same mnemonic:
@@ -447,8 +450,8 @@ ps aux | grep -v grep | grep wallet
 # (2) State file — only addresses + vault key references, no plaintext
 cat "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"
 
-# (3) Independent secret audit
-agent-vault scan "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"
+# (3) Independent secret audit (TTY-only)
+alice scan "$(uv run wallet info | awk '/state file/ {print $3,$4,$5}')"
 # Should report 0 secrets in the file.
 
 # (4) Confirm no temp files leak during a real signing (run in another shell)
@@ -635,7 +638,7 @@ src/wallet/
     audit.py           ~/.wallet/audit.log JSON-lines append-only writer (no CLI read)
     idempotency.py     ~/.wallet/idempotency.json — request_id → cached result
     state.py           pydantic schema for ~/.wallet/state.json
-    vault.py           agent-vault wrapper: FIFO transport + tempfile fallback
+    vault.py           alice (AnB) wrapper: FIFO transport + tempfile fallback
   services/
     explorer.py        Etherscan v2 client
 ```

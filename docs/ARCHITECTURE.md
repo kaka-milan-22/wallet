@@ -48,7 +48,7 @@ call` for one-off human-signed ops.
 | Config models | `pydantic v2` | `WalletState`, `Policy`, `ChainConfig`, `CachedResult` |
 | HTTP | `httpx` (0x quote API only) | `src/wallet/protocols/routes/zerox.py` |
 | Platform dirs | `platformdirs` (`~/.local/share/wallet` on macOS/Linux) | `src/wallet/core/config.py:data_root` |
-| Secrets | `agent-vault` (npm CLI, OS-keychain-derived) | `src/wallet/storage/vault.py` |
+| Secrets | `alice` (AnB CLI; master key held by `bob` KMS over mTLS) | `src/wallet/storage/vault.py` |
 | Test framework | `pytest 9.x` + `pytest-mock`, all MagicMock, no fork | `tests/` |
 
 Entry point: `wallet = "wallet.cli.app:app"` (`pyproject.toml:scripts`).
@@ -102,7 +102,7 @@ wallet/
 │   │   ├── policy.py          → core/policy.py owns the schema; storage handled there
 │   │   ├── audit.py           # append-only JSONL writer; 0o600
 │   │   ├── idempotency.py     # request_id → CachedResult; fingerprint()
-│   │   └── vault.py           # agent-vault FIFO wrapper for mnemonic reads
+│   │   └── vault.py           # alice (AnB) FIFO wrapper for mnemonic reads
 │   └── services/
 │       └── explorer.py        # Etherscan v2 API (history command)
 ├── tests/                      # ~5.8k LOC, pure MagicMock — no fork, no live RPC
@@ -276,7 +276,7 @@ follows this exact sequence; the differences are confined to the
             audit + emit_error("missing_request_id") + exit 3
         final confirm prompt unless --yes
         prepared.tx["nonce"] = w3.eth.get_transaction_count(from, "pending")   ← LATE: avoids stale
-        raw = sign_transaction(sender_account, prepared.tx)                    ← agent-vault FIFO
+        raw = sign_transaction(sender_account, prepared.tx)                    ← alice FIFO (bob decrypts)
         tx_hash = broadcast(w3, raw)
         if request_id: idempotency.record(request_id, fp, tx_hash, nonce, "broadcast")
         audit(broadcast)
@@ -316,7 +316,7 @@ Notes for new contributors:
 | `tokens.py` | `ERC20_ABI`, `TokenInfo`, `MAX_UINT256`, `erc20`, `fetch_token_info`, `clear_token_info_cache`, `balance_of`, `allowance`, `resolve_token`, `InsufficientAllowance`, `check_allowance_or_raise` | `TokenInfo.is_native` is THE security gate for native ETH routing — set ONLY by `cli/swap.py:_resolve_token_or_native` when user literally types the chain's native symbol. `InsufficientAllowance` lives here (not in `protocols/swap.py`) because swap / aave / lp all raise it; `check_allowance_or_raise` is the one helper to call — it short-circuits on `is_native` and `required_wei == 0`. |
 | `tx.py` | `PreparedTx`, `prepare_native_transfer`, `prepare_erc20_transfer`, `prepare_erc20_approve`, `broadcast`, `finalize_tx`, `_common_fields`, `_simulate`, `_strip_nonce` | EIP-1559 fees floored at 1 gwei priority. Nonce intentionally never set inside this module. `finalize_tx` is the **public** wrapper for `estimate_gas (if missing) → _simulate → _strip_nonce → return maxFeePerGas * gas`; the underscore-prefixed helpers stay internal and shouldn't be called directly from new code. |
 | `slippage.py` | `apply_slippage_floor` | Single source of truth for `amount * (10_000 - slippage_bps) // 10_000` with `[0, 10_000]` validation. Replaces the identical-but-separate `_apply_slippage` / `_apply_slippage_floor` that used to live in `routes/uniswap_v3.py` and `uniswap_v3_lp.py`. |
-| `signer.py` | `sign_transaction` | Reads mnemonic via `agent-vault` Unix FIFO into the signing process. Never lands on disk. |
+| `signer.py` | `sign_transaction` | Reads mnemonic via `alice` Unix FIFO (bob decrypts over mTLS) into the signing process. Never lands on disk. Requires bob unlocked. |
 | `hd.py` | `derive_account`, `DerivedAccount` | BIP-39/44. `DerivedAccount.private_key` has `repr=False` so `print()` / debug traces / `rich.log` never leak it. |
 | `policy.py` | `Policy`, `Decision`, `LpPoolAllowEntry`, `evaluate`, `default_policy`, `load_policy`, `save_policy`, `policy_path` | The actual gate. Categories enumerated in `_category()` (includes `contract_call` — agent hard-block + TTY-only). `LpPoolAllowEntry` is the `(token0, token1, fee)` schema for `Policy.lp_pool_allowlist`, with pydantic validators enforcing the V3 invariant `token0 < token1` and known fee tiers `{100, 500, 3000, 10000}`. **Every new `description.kind` you add must be classified here, otherwise security checks silently skip your new op.** |
 | `uniswap_v3_math.py` | `MIN_TICK`, `MAX_TICK`, `MIN_SQRT_RATIO`, `MAX_SQRT_RATIO`, `Q96`, `MAX_UINT128`, `FEE_TIER_TICK_SPACING`, `tick_spacing_for_fee`, `align_to_tick_spacing`, `get_sqrt_ratio_at_tick`, `get_tick_at_sqrt_ratio`, `get_amount0_for_liquidity`, `get_amount1_for_liquidity`, `get_amounts_for_liquidity` | Pure Python, no third-party dep. Anchor ticks (MIN/0/MAX) match on-chain constants exactly; interior values within 1 ulp of on-chain TickMath. **Off-chain estimation only — do NOT use for on-chain equality checks; read `pool.slot0()` instead.** |
@@ -366,7 +366,7 @@ explanation of why patching the source module is a vacuous test.
 | `state.py` | `WalletState` pydantic model (`accounts`, `book`, `watch`, `tokens`, `default_account`, `default_chain`); `state.json` |
 | `audit.py` | `audit.write(dict)`; auto-stamps `ts`; mode 0o600 |
 | `idempotency.py` | `fingerprint(prepared, chain)` (sha256 over canonical JSON of behavior-affecting fields); `lookup(request_id, fp)`; `record(...)`; 24h TTL |
-| `vault.py` | `read_mnemonic_via_fifo(vault_key)`; spawns `agent-vault get` and reads its stdout through a kernel pipe |
+| `vault.py` | `has(key)` (local metadata) + `reveal(vault_key)`; spawns `alice write <fifo> --content "<agent-vault:key>" --quiet` and reads the restored secret through a kernel pipe (bob does the decrypt). Tempfile fallback; bob-down/locked surfaces as `VaultUnavailableError` |
 
 ---
 
@@ -428,7 +428,7 @@ Tightened on every `data_root()` call to 0o700 directory + 0o600 files (see `con
 | `audit.log` | `storage/audit.py` | JSONL | append-only signing-attempt record |
 | `chains.json` (optional) | `core/config.py:get_chain` | dict[name, ChainConfig kwargs] | override / extend built-in chain presets |
 
-Secrets are NOT in any of the above. Mnemonics live in `agent-vault` (OS keychain-derived); private keys are derived in-process and dropped.
+Secrets are NOT in any of the above. Mnemonics live in `alice` (AnB; ciphertext on the client, master key held by `bob` over mTLS — never on the client, never on disk in plaintext); private keys are derived in-process and dropped.
 
 ---
 
