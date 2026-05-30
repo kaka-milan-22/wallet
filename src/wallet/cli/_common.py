@@ -562,6 +562,24 @@ def _render_wait_line(wait_data: dict) -> None:
         )
 
 
+def _compose_audit_reason(hint: str | None, request_id: str | None) -> str | None:
+    """Build the audit `--reason` string forwarded to alice on the signing
+    decrypt call. Both inputs are optional; if both are missing, returns None
+    and the alice call drops `--reason` entirely.
+
+    Format: "<hint> (req=<request_id>)" — hint conveys the operation
+    ("send 0.01 ETH to @alice"), request_id ties Bob's audit line back to
+    wallet's own audit JSON for cross-system reconciliation.
+    """
+    if hint and request_id:
+        return f"{hint} (req={request_id})"
+    if hint:
+        return hint
+    if request_id:
+        return f"req={request_id}"
+    return None
+
+
 def confirm_and_broadcast(
     w3,
     state: WalletState,
@@ -576,6 +594,7 @@ def confirm_and_broadcast(
     preserve_nonce: bool = False,
     wait: bool = False,
     wait_timeout: int = 60,
+    reason: str | None = None,
 ) -> None:
     """Drive a PreparedTx through preview / policy / idempotency / sign / broadcast.
 
@@ -780,7 +799,13 @@ def confirm_and_broadcast(
     # honored on mev_exposure==True chains.
     w3_broadcast = web3_broadcast(chain)
     try:
-        raw = sign_transaction(sender_account, prepared.tx)
+        # Compose the audit reason from the caller's hint + request_id so
+        # Bob's ALLOW line lets you cross-reference wallet's audit JSON
+        # (which keys on request_id) by simple grep. If neither is provided,
+        # alice gets no --reason and the audit line falls back to the
+        # daemon's default "no reason" rendering.
+        audit_reason = _compose_audit_reason(reason, request_id)
+        raw = sign_transaction(sender_account, prepared.tx, reason=audit_reason)
         tx_hash = broadcast(w3_broadcast, raw)
     except Exception as e:
         # Stuck-tx recovery (preserve_nonce=True) has a known benign failure:

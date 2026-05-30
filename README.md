@@ -188,6 +188,20 @@ uv run wallet account show main
 # `signed: yes (vault populated)` confirms vault wiring.
 ```
 
+**Cross-verification (AnB v3.3+)**. AnB's own `alice eth` command derives
+addresses from the same BIP-39 mnemonic using an independent implementation
+(Go + `tyler-smith/go-bip32`; wallet uses Python + `eth-account`). If both
+agree, the derivation path on both ends is sound:
+
+```sh
+alice eth address --name wallet-main-mnemonic --index 0
+# Should print the SAME EIP-55 address that `wallet account show main` reports.
+# Mismatch = something is wrong on one side; do NOT fund this address yet.
+```
+
+This is a free sanity check before sending any real value to a new account —
+the two independent derivations must converge on the same address.
+
 To **import** an existing mnemonic instead:
 
 ```sh

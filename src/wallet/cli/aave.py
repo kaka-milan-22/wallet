@@ -385,6 +385,7 @@ def supply(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet aave on {cfg.name}",
     )
 
 
@@ -466,6 +467,7 @@ def withdraw(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet aave on {cfg.name}",
     )
 
 
@@ -538,6 +540,7 @@ def faucet(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet aave on {cfg.name}",
     )
 
 
@@ -610,6 +613,7 @@ def borrow(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet aave on {cfg.name}",
     )
 
 
@@ -712,4 +716,5 @@ def repay(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet aave on {cfg.name}",
     )

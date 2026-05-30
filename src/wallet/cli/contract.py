@@ -115,4 +115,5 @@ def call(
         request_id=request_id,
         wait=wait,
         wait_timeout=wait_timeout,
+        reason=f"wallet contract call on {cfg.name}",
     )

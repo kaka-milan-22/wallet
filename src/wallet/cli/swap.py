@@ -148,4 +148,5 @@ def swap(
         request_id=request_id,
         wait=wait,
         wait_timeout=wait_timeout,
+        reason=f"wallet swap on {cfg.name}",
     )

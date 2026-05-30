@@ -111,4 +111,5 @@ def send(
         request_id=request_id,
         wait=wait,
         wait_timeout=wait_timeout,
+        reason=f"wallet send on {cfg.name}",
     )

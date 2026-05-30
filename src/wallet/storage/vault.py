@@ -69,9 +69,22 @@ def _bin() -> str:
     if not p:
         raise VaultError(
             "alice not found on PATH. Install: "
-            "go install github.com/kaka-milan-22/AnB/v2/cmd/alice@latest"
+            "go install github.com/kaka-milan-22/AnB/v3/cmd/alice@latest"
         )
     return p
+
+
+def _alice_write_cmd(sink: str, placeholder: str, reason: str | None) -> list[str]:
+    """Build `alice write` argv, optionally with the v2.4+ `--reason` flag.
+
+    Centralised so the FIFO path and the tempfile fallback can't drift apart:
+    if one acquires a new flag, the other inherits it for free. Reason strings
+    are passed verbatim — alice does its own length / charset enforcement.
+    """
+    cmd = [_bin(), "write", sink, "--content", placeholder, "--quiet"]
+    if reason:
+        cmd += ["--reason", reason]
+    return cmd
 
 
 def _looks_unavailable(stderr: str) -> bool:
@@ -130,11 +143,17 @@ def has(key: str) -> bool:
     return False
 
 
-def reveal(key: str) -> str:
+def reveal(key: str, *, reason: str | None = None) -> str:
     """Return the plaintext secret stored under `key`.
 
     Caller must treat the returned string as sensitive and avoid writing it to
     logs / stdout / files. It lives only in this Python process memory.
+
+    `reason` (AnB v2.4+): a short free-text "why" string forwarded to alice via
+    `--reason R`. Bob's JSON audit log records it on the ALLOW line, which lets
+    `bob.log` correlate every mnemonic reveal with the wallet operation that
+    needed it (request_id, tx description, etc.) — independent of wallet's own
+    audit log, so the two can be cross-referenced after the fact.
 
     Transport: kernel FIFO between alice and this process; alice asks bob to
     decrypt. Falls back to a 0600 temp file if the FIFO path fails on this
@@ -152,7 +171,7 @@ def reveal(key: str) -> str:
         os.mkfifo(fifo, mode=0o600)
 
         proc = subprocess.Popen(
-            [_bin(), "write", fifo, "--content", placeholder, "--quiet"],
+            _alice_write_cmd(fifo, placeholder, reason),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
@@ -180,7 +199,7 @@ def reveal(key: str) -> str:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
-        return _reveal_via_tempfile(key)
+        return _reveal_via_tempfile(key, reason=reason)
     finally:
         try:
             os.unlink(fifo)
@@ -234,19 +253,22 @@ def _read_fifo_with_timeout(
         os.close(fd)
 
 
-def _reveal_via_tempfile(key: str) -> str:
+def _reveal_via_tempfile(key: str, *, reason: str | None = None) -> str:
     """Legacy fallback: alice writes to a 0600 temp file, we read + unlink.
 
     The plaintext exists on disk for milliseconds. Used only if the FIFO
     transport in `reveal()` fails on this platform. Also the terminal path when
     bob is down — alice's stderr is classified into VaultUnavailableError here.
+
+    `reason` is threaded through to alice's `--reason` flag exactly as in the
+    FIFO path, so the audit story stays consistent across transports.
     """
     fd, path = tempfile.mkstemp(prefix="wallet-secret-", text=True)
     os.close(fd)
     try:
         placeholder = f"<agent-vault:{key}>"
         r = subprocess.run(
-            [_bin(), "write", path, "--content", placeholder, "--quiet"],
+            _alice_write_cmd(path, placeholder, reason),
             capture_output=True,
             text=True,
             check=False,
