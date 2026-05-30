@@ -125,6 +125,7 @@ def cancel(
         preserve_nonce=True,
         wait=wait,
         wait_timeout=wait_timeout,
+        reason=f"wallet tx cancel nonce={nonce} on {cfg.name}",
     )
 
 
@@ -169,4 +170,5 @@ def replace(
         preserve_nonce=True,
         wait=wait,
         wait_timeout=wait_timeout,
+        reason=f"wallet tx replace nonce={nonce} on {cfg.name}",
     )

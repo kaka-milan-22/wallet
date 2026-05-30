@@ -106,6 +106,7 @@ def set_allowance(
         dry_run=not broadcast, yes=yes, policy_bypass=policy_bypass,
         request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet approve {token_info.symbol} for {spender_addr} on {cfg.name}",
     )
 
 
@@ -214,4 +215,5 @@ def revoke(
         dry_run=not broadcast, yes=yes, policy_bypass=policy_bypass,
         request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet revoke {token_info.symbol} approval for {spender_addr} on {cfg.name}",
     )

@@ -189,6 +189,41 @@ def test_reveal_cleans_fifo_on_error(has_true, monkeypatch):
     assert not os.path.exists(captured["dir"])
 
 
+def test_reveal_forwards_reason_to_alice(has_true, monkeypatch):
+    """v1.11: reveal(key, reason='...') must add `--reason <reason>` to the
+    alice subprocess call so Bob's audit log captures why the mnemonic was
+    decrypted. Regression for the audit-correlation feature."""
+    captured: dict[str, list[str]] = {}
+
+    def factory(args, **_kw):
+        captured["args"] = list(args)
+        return FakeAlice(args[2], "real-mnemonic")
+
+    monkeypatch.setattr(subprocess, "Popen", factory)
+    assert reveal("k", reason="send 0.01 ETH on sepolia (req=abc)") == "real-mnemonic"
+
+    # `--reason` must appear in the alice argv, with the exact reason string.
+    args = captured["args"]
+    assert "--reason" in args, f"missing --reason in {args}"
+    idx = args.index("--reason")
+    assert args[idx + 1] == "send 0.01 ETH on sepolia (req=abc)", args[idx + 1]
+
+
+def test_reveal_omits_reason_when_none(has_true, monkeypatch):
+    """No reason given → no --reason flag in argv. Keeps the surface clean for
+    callers that don't care about audit correlation (and for backward compat
+    with operators on pre-v2.4 alice)."""
+    captured: dict[str, list[str]] = {}
+
+    def factory(args, **_kw):
+        captured["args"] = list(args)
+        return FakeAlice(args[2], "x")
+
+    monkeypatch.setattr(subprocess, "Popen", factory)
+    reveal("k")  # no reason passed
+    assert "--reason" not in captured["args"], captured["args"]
+
+
 def test_reveal_falls_back_to_tempfile_on_writer_hang(has_true, monkeypatch):
     """If the FIFO writer never connects within the timeout, the wallet must
     degrade gracefully to the legacy tempfile path. This proves the fallback

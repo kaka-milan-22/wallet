@@ -189,6 +189,7 @@ def collect(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet lp on {cfg.name}",
     )
 
 
@@ -250,6 +251,7 @@ def remove(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet lp on {cfg.name}",
     )
 
 
@@ -377,6 +379,7 @@ def mint(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet lp on {cfg.name}",
     )
 
 
@@ -496,4 +499,5 @@ def increase(
         dry_run=not broadcast, yes=yes,
         policy_bypass=policy_bypass, request_id=request_id,
         wait=wait, wait_timeout=wait_timeout,
+        reason=f"wallet lp on {cfg.name}",
     )

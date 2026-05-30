@@ -16,14 +16,27 @@ from wallet.storage import vault
 from wallet.storage.state import AccountEntry
 
 
-def sign_transaction(account: AccountEntry, tx: dict[str, Any]) -> bytes:
+def sign_transaction(
+    account: AccountEntry,
+    tx: dict[str, Any],
+    *,
+    reason: str | None = None,
+) -> bytes:
+    """Sign `tx` with the account's mnemonic-derived private key.
+
+    `reason` is forwarded to alice via `--reason` so Bob's JSON audit captures
+    why the mnemonic was decrypted. Callers (each CLI signing command) should
+    pass a short verb-and-target string, e.g. "send 0.01 ETH to @alice via
+    wallet (request_id=...)" — this lets `bob.log` correlate with wallet's
+    own audit log without sharing any state.
+    """
     if not vault.has(account.vault_key):
         raise RuntimeError(
             f"vault key '{account.vault_key}' is empty — run "
             f"`alice set {account.vault_key}` first"
         )
 
-    mnemonic = vault.reveal(account.vault_key)
+    mnemonic = vault.reveal(account.vault_key, reason=reason)
     try:
         derived = hd.derive(mnemonic, path=account.derivation_path)
     finally:

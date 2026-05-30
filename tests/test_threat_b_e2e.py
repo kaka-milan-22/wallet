@@ -451,7 +451,8 @@ def test_nonce_refreshed_just_before_signing(
 
     captured = {}
 
-    def capturing_sign(_account, tx):
+    def capturing_sign(_account, tx, **_kw):
+        # **_kw absorbs the v1.11 `reason=` audit-correlation kwarg.
         captured["nonce_at_sign"] = tx.get("nonce")
         return b"\x00" * 100
 
