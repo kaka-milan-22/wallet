@@ -2,6 +2,7 @@
 name = "wallet"
 version = "0.1.0"
 description = "DeFi CLI wallet — Phase 1 (basics: account, transfer, approve, history)"
+license = { file = "LICENSE" }
 requires-python = ">=3.13"
 dependencies = [
     # Upper bounds pin each dep to the next major. web3.py 8 and pydantic 3
